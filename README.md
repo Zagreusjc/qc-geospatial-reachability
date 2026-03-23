@@ -213,7 +213,6 @@ MIT License. All datasets are open source under their respective licenses. See `
 
 ## Contact
 
-**[Your Name]**  
-B.S. Data Science, [University Name]  
-[your.email@university.edu.ph]  
-[LinkedIn URL] · [GitHub URL]
+**John Carlo I. Benter**  
+B.S. Computer Science Major in Data Science, University of Santo Tomas
+johncarlo.benter.cics@ust.edu.ph
