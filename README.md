@@ -1,4 +1,4 @@
-# qc-accessibility-oracle
+# qc-geospatial-reachability
 # Neural Distance Oracles for Geospatial Reachability
 ### Graph Embedding and Metric Learning on Quezon City's Road Network
 
