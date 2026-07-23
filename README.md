@@ -1,170 +1,176 @@
 # qc-accessibility-oracle
-# A Neural Distance Oracle for Structural Urban Accessibility
+# Neural Distance Oracles for Geospatial Reachability
 ### Graph Embedding and Metric Learning on Quezon City's Road Network
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Data](https://img.shields.io/badge/Data-Open%20Source-orange.svg)](https://data.humdata.org/)
 [![Status](https://img.shields.io/badge/Status-In%20Progress-yellow.svg)]()
 
-> Undergraduate Thesis — B.S. Computer Science Major in Data Science  
-> University of Santo Tomas · 2025-2026  
+> Undergraduate Thesis — B.S. Computer Science
+> University of Santo Tomas, College of Information and Computing Sciences, 2025-2026
+> Benter, J.C. · Magcaling, E.J. · Solano, S. · Vega, J.F.E. · Adviser: Estabillo, C.R.
 
 ---
 
 ## The Problem
 
-In Quezon City — the most populous city in the Philippines with 2.96 million residents across 142 barangays — **physical distance is a broken ruler.**
+In Quezon City — the most populous city in the Philippines, with 2.9 million residents across 142 barangays — **physical distance is a broken ruler.** Two barangays that look equally close to a hospital on a straight-line map can be worlds apart once you account for how the road network actually connects them: low-speed road classes, fragmented connectivity, and a handful of overloaded arterial corridors create permanent structural friction that a flat map cannot see.
 
-A resident of Batasan Hills and a resident of Blue Ridge may live the same Euclidean distance from the nearest hospital. But their *structural* accessibility — the ease with which the road network actually connects them to that hospital — differs dramatically. Fragmented road connectivity, a small number of overloaded arterial corridors, and deep residential interior areas create permanent mobility gaps that a flat map cannot see.
-
-The challenge is computational as much as it is geographic. Computing exact structural shortest-path distances across a road network of ~70,000 intersections using Dijkstra's algorithm requires **O(N² log N)** time and **O(N²)** space — prohibitive for repeated citywide accessibility queries.
+The challenge is computational as much as geographic. Computing exact structural shortest-path distances across a road network of roughly 70,000 intersections with Dijkstra's algorithm is prohibitively expensive for repeated, citywide distance scoring. Local planners under the Revised Quezon City Comprehensive Development Plan 2026-2031 are mandated to make data-driven infrastructure decisions but lack a principled, structural distance measurement tool.
 
 ---
 
 ## What This Study Builds
 
-A **neural distance oracle** — a Siamese neural network trained on Node2Vec+ embeddings of Quezon City's friction-weighted road network graph — that approximates structural shortest-path distances in **O(1) query time** after a one-time preprocessing step.
+A **neural distance oracle** — a Siamese neural network trained on **Node2Vec+** embeddings of Quezon City's **friction-weighted** road network graph — that approximates structural (friction-weighted) shortest-path distances in **O(1) query time** after a one-time preprocessing step.
 
-No GPS data. No behavioral observations. No proprietary sources. Everything is derived from open, static, freely available datasets.
+No GPS data. No behavioral surveys. No proprietary sources. Everything is derived from open, static, freely available datasets.
 
 ```
-HDX Roads Shapefile (static)
-        ↓
-Friction-Weighted Graph
-Road Class Traversal Cost × Edge Betweenness Centrality
-        ↓
-Node2Vec+ Structural Embeddings (64-dim)
-+ Node Feature Vector (6-dim)
-= 70-dim Node Identity
-        ↓
-Siamese Network trained on Dijkstra friction distances
-        ↓
-Neural Distance Oracle — O(1) structural distance queries
-        ↓
-Structural Accessibility Scores × 142 QC Barangays
-        ↓
-Accessibility Desert Map of Quezon City
+Open geographic data (HDX / PSA / JICA speed table)
+        |
+Friction-weighted road graph  G_scc = (V, E)
+Edge weight = (length / road-class speed) x (1 + alpha x normalized EBC)
+        |
+Node2Vec+ structural embeddings  (128-dim, weight-aware biased walks)
+        |
+Siamese network trained on Dijkstra friction distances (MSE regression)
+        |
+Neural Distance Oracle -- O(1) structural distance queries
+        |
+Mean structural-isolation score per barangay
+        |
+Barangay structural-isolation choropleth of Quezon City
 ```
 
 ---
 
 ## Research Questions
 
-**RQ1 — Approximation Quality**
-Can a Siamese network trained on Node2Vec+ embeddings approximate exact Dijkstra friction distances with Spearman ρ > 0.75 and MAE < 8 minutes on held-out node pairs?
+**RQ1 — Structural validity.** How can travel cost between QC intersections be structurally validated through a friction-weighted road graph built from open geographic data?
 
-**RQ2 — Edge Weight Design**
-Does incorporating Edge Betweenness Centrality as a global topological load multiplier produce statistically significantly better distance approximations than road-class traversal cost alone?
+**RQ2 — Approximation quality.** To what extent can a Siamese network trained on Node2Vec+ embeddings approximate friction-weighted shortest-path distances, evaluated by rank preservation (Spearman rho) and approximation error (MAE, RMSE) against exact Dijkstra ground truth?
 
-**RQ3 — Equity Application**
-Does the trained oracle identify structurally underserved barangays that Euclidean distance-based analysis systematically misclassifies as accessible?
+**RQ3 — Edge weight and architecture design.** Which combination of friction-weight design and neural architecture best captures structural road-network impedance for identifying congestion-prone corridors and structurally isolated areas?
+
+**RQ4 — Broken ruler.** How does the oracle perform relative to Euclidean and exact Dijkstra baselines, and where does physical distance most severely misrepresent friction-weighted travel cost?
+
+---
+
+## Hypotheses
+
+| ID | Alternative hypothesis (Ha) | Tested by |
+|---|---|---|
+| H1 | Node2Vec+ embeddings encode topological proximity well enough to support supervised distance regression (better than chance) | Any oracle vs chance |
+| H2 | The Siamese oracle differs significantly in accuracy from a Euclidean baseline | Oracle vs Euclidean |
+| H3 | Adding normalized EBC to edge weights lowers approximation error vs traversal cost alone | W1 vs W3, same architecture |
+| H4 | A Siamese architecture outperforms a single-stream MLP under identical embeddings | Siamese vs MLP, same weights |
 
 ---
 
 ## Datasets
 
-All datasets are pre-existing, freely available, and statically timestamped at download. No live APIs. No proprietary sources.
+All datasets are pre-existing, freely available, and statically timestamped at download. No live APIs, no proprietary sources.
 
 | Dataset | Source | Role |
 |---|---|---|
-| HOTOSM Philippines Roads | [HDX](https://data.humdata.org/dataset/hotosm_phl_roads) | Graph skeleton — nodes and edges |
-| HOTOSM Philippines POI | [HDX](https://data.humdata.org/dataset/hotosm_phl_points_of_interest) | Destination nodes — hospitals, schools, markets, transit |
-| HOTOSM Philippines Buildings | [HDX](https://data.humdata.org/dataset/hotosm_phl_buildings) | Node building density feature |
-| PSA Admin Boundaries | [HDX](https://data.humdata.org/dataset/cod-ab-phl) | QC clip boundary + barangay aggregation |
-| PSA 2020 Census | [PSA](https://psa.gov.ph/population-and-housing) | Population density weight |
+| HOTOSM Philippines Roads | [HDX](https://data.humdata.org/dataset/hotosm_phl_roads) | Road network skeleton — nodes (intersections) and edges (segments), `highway` class, `oneway` |
+| PSA / NAMRIA Administrative Boundaries (COD-AB, ADM3 + ADM4) | [HDX `cod-ab-phl`](https://data.humdata.org/dataset/cod-ab-phl) | QC clip boundary + the 142 barangay polygons for node assignment and choropleth |
+| JICA 2015 Speed Lookup Table | JICA (2015), encoded in `src/config.py` | Estimated operating speed per road class (friction is measured in travel time) |
+
+### Barangay boundaries (resolving the clipping concern)
+
+Assigning each node to a barangay and drawing the 142-barangay choropleth requires **barangay-level polygons**, not just the QC city outline. Open barangay polygons do exist; the pipeline uses a **fallback ladder** (`src/01b_barangays.py`) and caches the first source that resolves to `data/processed/qc_barangays.gpkg`:
+
+1. **HDX COD-AB Philippines (`cod-ab-phl`), Admin Level 4** — barangay polygons on the same platform already cited; filter to QC. *(primary)*
+2. Curated PSA + NAMRIA GeoJSON (`bendlikeabamboo/barangay-boundaries-repository`, PSGC-annotated).
+3. OpenStreetMap barangay relations (`admin_level=10`) via OSMnx.
+4. geoBoundaries PHL ADM4 (CC-BY).
+5. Last resort: synthesized barangay proxy zones via Voronoi tessellation of barangay centroids clipped to the QC boundary (documented as a limitation).
+
+Everything downstream reads the single cached `qc_barangays.gpkg`, so the source is swappable without touching the pipeline.
 
 ---
 
 ## Methodology
 
-### Stage 1 — Graph Construction
-The HDX roads shapefile is clipped to QC's administrative boundary and converted into a directed weighted graph using OSMnx and NetworkX. Nodes are road intersections (~70,000). Edges are road segments (~180,000).
+The pipeline follows the manuscript's seven sequential phases (Chapter III, Fig 3.1). Each stage is a re-runnable script that checkpoints its artifacts.
 
-### Stage 2 — Structural Friction Weights
-Each edge receives a two-component friction weight:
+### Stage 1 — Graph construction, cleaning, and SCC extraction
+The HOTOSM roads layer is clipped to QC and converted into a directed multigraph with OSMnx (nodes = intersections, edges = segments). Cleaning, in order:
+1. **Highway-class filter** — keep `motorway, trunk, primary, secondary, tertiary, unclassified, residential, service, living_street` (+ `_link`); drop footways, cycleways, pedestrian, construction.
+2. **Missing-tag handling** — edges lacking a `highway` tag default to `residential` speed; the percentage defaulted is logged (descriptive finding).
+3. **Projection** — reproject to UTM 51N (EPSG:32651) for metric lengths; keep an EPSG:4326 copy for maps and the Euclidean baseline.
+4. **Simplification / consolidation**, then **self-loop and parallel-edge dedupe**.
+5. **Strongly Connected Component extraction** (Tarjan) — keep only the largest SCC so all Dijkstra distances are finite; excluded-node count, percentage, and barangay distribution are logged.
 
+### Stage 2 — Edge Betweenness Centrality
+EBC is computed **unweighted** (`weight=None`) so it reflects topology, then normalized to [0, 1]. Exact Brandes is available, plus a `k`-sampled approximate mode for large-graph tractability. Result is cached to `data/processed/ebc.parquet`.
+
+### Stage 3 — Friction weights (three ablation conditions)
 ```
-friction_weight(e) = traversal_cost(e) × (1 + α × normalized_EBC(e))
+W1 (traversal cost)     w1 = length / speed(road_class)
+W2 (EBC only)           w2 = normalized_EBC
+W3 (composite, primary) w3 = w1 x (1 + alpha x normalized_EBC),  alpha = 1.0
 ```
+W3 adapts the Bureau of Public Roads link-cost form, substituting normalized EBC for the volume-to-capacity ratio in the absence of behavioral traffic counts.
 
-**Component A — Traversal Cost:** Length divided by road-class speed calibrated to Metro Manila's documented operating conditions (MMDA regulations, ScienceDirect 2019 observed speeds).
+### Stage 4 — Node2Vec+ embeddings
+For each weight condition, PecanPy's weight-aware Node2Vec+ (`extend=True`) generates **128-dimensional** node embeddings via biased random walks (`L=80`, `r=10`, `p=1.0`, `q=0.5`, `window=10`). `q < 1` biases toward global (DFS-like) structure, better for long-range distances. Produces `Z_W1`, `Z_W2`, `Z_W3`.
 
-**Component B — Edge Betweenness Centrality (EBC):** The proportion of all-pairs shortest paths in the QC network that pass through each edge. Computed via NetworkX. Identifies permanent topological bottlenecks.
+### Stage 5 — Stratified pair sampling and Dijkstra labels
+A 10k pilot sample defines 10 distance deciles. Training (500k) and validation (50k) are **stratified** across deciles for balanced short- and long-range coverage; the test set (50k) is **uniform random** to reflect the natural distance skew. Exact friction-weighted Dijkstra distances are the ground-truth labels, computed per weight condition (directed pairs preserved).
 
-### Stage 3 — Node2Vec+ Embeddings
-Node2Vec+ (Newaz et al., 2023) — a weighted-graph-aware extension of Node2Vec — generates 64-dimensional structural embeddings via biased random walks on the friction-weighted graph. Each embedding is concatenated with a 6-dimensional node feature vector (population density, building density, distance to nearest hospital/school/market/transit).
+### Stage 6-7 — Oracle architectures and the 3x2 ablation
+- **Architecture A — Siamese:** shared twin branch `FC(128->256->128->64)` with BatchNorm + ReLU; combine by absolute element-wise difference `|z_u - z_v|`; prediction head `FC(64->32->1)`. Weight sharing enforces symmetry by construction.
+- **Architecture B — MLP baseline:** concatenated `[z_u; z_v]` (256-d) through five FC layers to a linear scalar; symmetry only encouraged via reversed-pair augmentation.
 
-### Stage 4 — Siamese Network Training
-A Siamese neural network (shared encoder: 70→128→64→32, L2-normalized output) is trained on 5,000 sampled node pairs using pairwise MSE loss against Dijkstra friction distances as ground truth. After training, structural distances between any two nodes are computed as the Euclidean distance between their 32-dimensional latent representations — **O(1)** query time.
+Both are trained with **MSE** against Dijkstra labels using Adam (`lr=1e-3`, `weight_decay=1e-5`), cosine annealing over 100 epochs, early stopping on validation MAE (patience 10). The **3 weights x 2 architectures x 3 seeds = 18 runs** isolate the EBC contribution (H3) and the Siamese contribution (H4).
 
-### Stage 5 — Accessibility Scoring and Desert Mapping
-Node-level Structural Accessibility Scores aggregate inverse latent distances to nearby POIs. Scores are population-weighted and aggregated to 142 barangays. DBSCAN clustering delineates Accessibility Desert zones. Results rendered as an interactive Folium choropleth map.
+### Stage 8 — Evaluation
+On a shared held-out test set: **Spearman rho** (primary), **MAE**, **RMSE**, the RMSE/MAE ratio, and multiplicative **distortion** (mean, worst-case, std), compared against Thorup-Zwick `(2k-1)` stretch at k = 2, 3. A **Euclidean great-circle baseline** is evaluated on the same pairs, and **high-divergence "broken-ruler" pairs** (>95th percentile Euclidean distortion) are extracted for mapping. Ablation results report mean +/- std across seeds with Cohen's d effect sizes and bootstrap confidence intervals.
+
+### Stage 9 — Barangay structural-isolation choropleth
+The best oracle produces a per-node structural-isolation score; nodes are spatially joined to their barangay polygon and averaged, yielding one score per barangay. Rendered as an interactive Folium choropleth, with the broken-ruler pairs on a second layer.
 
 ---
 
-## Ablation Study
+## Ablation Study (3 x 2 factorial, 3 seeds each)
 
-The oracle is trained and evaluated under four conditions to empirically determine the contribution of each design choice:
-
-| Condition | Edge Weight | Architecture |
+| | Architecture A — Siamese | Architecture B — MLP |
 |---|---|---|
-| A — Baseline | Physical length | MLP |
-| B — Road class only | Traversal cost | MLP |
-| C — Full friction + MLP | Traversal cost × EBC | MLP |
-| D — Full friction + Siamese | Traversal cost × EBC | Siamese |
+| **W1** Traversal cost only | A-W1 | B-W1 |
+| **W2** EBC only | A-W2 | B-W2 |
+| **W3** Composite (primary) | A-W3 | B-W3 |
+
+- **H3 (EBC signal):** compare W1 vs W3 within an architecture.
+- **H4 (architecture):** compare Siamese vs MLP within a weight condition.
 
 ---
 
-## Validation
+## Validation Metrics
 
-Evaluated on 1,000 held-out node pairs against two baselines:
-
-| Metric | Target | Baseline 1 | Baseline 2 |
-|---|---|---|---|
-| Spearman ρ | > 0.75 | Euclidean distance | Unweighted Dijkstra |
-| MAE (min) | < 8 min | Euclidean (rescaled) | Unweighted Dijkstra |
-| RMSE (min) | < 12 min | Euclidean (rescaled) | Unweighted Dijkstra |
-
-**Broken Ruler Case Studies:** The 10 node pairs with the greatest discrepancy between Euclidean rank and latent distance rank are documented with their structural explanation.
+| Metric | Role |
+|---|---|
+| Spearman rho | Primary — rank preservation of node-pair distances |
+| MAE, RMSE | Absolute error magnitude (same units as the weight condition) |
+| Distortion (mean / worst / std) | Ties results to classical oracle stretch bounds |
+| Euclidean baseline + broken-ruler pairs | Where physical distance most misrepresents structural cost |
 
 ---
 
 ## Tools and Frameworks
 
 ```
-Graph Construction    OSMnx, NetworkX, GeoPandas
-Graph Embedding       Node2Vec+ (Newaz et al., 2023)
-ML Framework          PyTorch
-Clustering            DBSCAN (Scikit-learn)
-Spatial Output        GeoPandas, Folium
-Validation            Spearman ρ, MAE, RMSE
+Graph construction    OSMnx, NetworkX, GeoPandas, Shapely
+Graph embedding       Node2Vec+ (PecanPy)
+ML framework          PyTorch
+Evaluation            scikit-learn, SciPy (spearmanr)
+Spatial output        GeoPandas, Folium
 ```
 
----
-
-## Key References
-
-- Boeing, G. (2017). OSMnx. *Computers, Environment and Urban Systems*, 65, 126–139.
-- Boeing, G. (2025). Modeling and Analyzing Urban Networks and Amenities with OSMnx. *Geographical Analysis*.
-- Grover, A., & Leskovec, J. (2016). node2vec. *KDD 2016*.
-- Newaz, A. et al. (2023). Node2Vec+. *Oxford Bioinformatics*.
-- Kirkley, A. et al. (2018). Betweenness centrality in street networks. *Nature Communications*.
-- Bromley, J. et al. (1993). Siamese neural network. *NIPS 1993*.
-- Rizi, A. et al. (2018). Shortest path distance approximation using deep learning. *ASONAM 2018*.
-- Zhao, Y. et al. (2022). RNE: Road network embedding. *VLDB Journal*.
-
----
-
-## Novelty
-
-This is the **first graph embedding study of any Philippine city's road network.** The specific combination of:
-
-- Node2Vec+ on EBC-enriched structural friction weights
-- Siamese metric learning architecture for road distance approximation
-- Urban accessibility equity application of a neural distance oracle
-
-has not been previously demonstrated in the literature.
+All versions are pinned in `requirements.txt` for full reproducibility.
 
 ---
 
@@ -172,19 +178,25 @@ has not been previously demonstrated in the literature.
 
 ```
 ├── data/
-│   └── DATA_MANIFEST.txt        ← dataset download dates and sources
+│   ├── raw/                     # downloaded snapshots
+│   ├── interim/                 # intermediate artifacts
+│   ├── processed/               # G_scc, ebc.parquet, qc_barangays.gpkg, pairs_*.parquet
+│   └── DATA_MANIFEST.md         # dataset sources, versions, retrieval dates
 ├── src/
-│   ├── 01_graph_construction.py
-│   ├── 02_friction_weights.py
-│   ├── 03_node_features.py
-│   ├── 04_node2vec_embeddings.py
-│   ├── 05_siamese_training.py
-│   ├── 06_accessibility_scoring.py
-│   └── 07_desert_mapping.py
-├── notebooks/
-│   └── exploratory_analysis.ipynb
+│   ├── config.py                # speed table, hyperparameters, paths
+│   ├── 00_download_data.py      # HDX roads + admin boundaries
+│   ├── 01_graph_construction.py # build, clean, SCC extraction
+│   ├── 01b_barangays.py         # barangay boundary resolver (fallback ladder)
+│   ├── 02_ebc.py                # edge betweenness centrality (exact / k-sampled)
+│   ├── 03_friction_weights.py   # W1, W2, W3 edge-weight conditions
+│   ├── 04_embeddings.py         # Node2Vec+ per condition -> Z_W1..W3
+│   ├── 05_sampling_labels.py    # stratified sampling + Dijkstra ground truth
+│   ├── 06_models.py             # Siamese (A) + MLP (B)
+│   ├── 07_train.py              # 3x2 x 3-seed ablation training
+│   ├── 08_evaluate.py           # metrics, Euclidean baseline, ablation table
+│   └── 09_isolation_choropleth.py # per-barangay isolation map
 ├── outputs/
-│   └── (trained model + choropleth map generated here)
+│   ├── models/  embeddings/  figures/  tables/  maps/
 ├── requirements.txt
 └── README.md
 ```
@@ -194,25 +206,33 @@ has not been previously demonstrated in the literature.
 ## Status
 
 - [x] Thesis proposal finalized
-- [x] Dataset plan confirmed
-- [x] Methodology pipeline designed
-- [ ] Graph construction — in progress
-- [ ] Friction weight computation — pending
-- [ ] Node2Vec+ embeddings — pending
-- [ ] Siamese network training — pending
-- [ ] Accessibility scoring — pending
-- [ ] Desert map output — pending
+- [x] Methodology pipeline designed (revised manuscript)
+- [ ] Repo skeleton, config, requirements
+- [ ] Data acquisition + barangay boundary resolver
+- [ ] Graph construction, cleaning, SCC
+- [ ] Edge Betweenness Centrality
+- [ ] Friction weights (W1, W2, W3)
+- [ ] Node2Vec+ embeddings
+- [ ] Stratified sampling + Dijkstra labels
+- [ ] Siamese / MLP training (3x2 ablation)
+- [ ] Evaluation + ablation table
+- [ ] Barangay isolation choropleth
+
+---
+
+## Novelty
+
+This is the **first graph embedding-based distance analysis of any Philippine city's road network.** The combination of Node2Vec+ on EBC-enriched friction weights, a Siamese metric-learning oracle for road-distance approximation, and a barangay-level structural-isolation application has not been previously demonstrated. The trained oracle and its friction-weighted graph are reusable research artifacts for future Philippine urban network studies, and the methodology directly advances the Revised QC CDP 2026-2031 and UN SDGs 9 and 11.
 
 ---
 
 ## License
 
-MIT License. All datasets are open source under their respective licenses. See `data/DATA_MANIFEST.txt` for full attribution.
+MIT License. All datasets are open source under their respective licenses. See `data/DATA_MANIFEST.md` for full attribution.
 
 ---
 
 ## Contact
 
-**John Carlo I. Benter**  
-B.S. Computer Science Major in Data Science, University of Santo Tomas
+**John Carlo I. Benter** — B.S. Computer Science, University of Santo Tomas
 johncarlo.benter.cics@ust.edu.ph
