@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Data artifacts (large / regenerable) -- keep folders via .gitkeep, ignore contents
+data/raw/*
+data/interim/*
+data/processed/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# Pipeline outputs (regenerable)
+outputs/models/*
+outputs/embeddings/*
+outputs/figures/*
+outputs/tables/*
+outputs/maps/*
+!outputs/models/.gitkeep
+!outputs/embeddings/.gitkeep
+!outputs/figures/.gitkeep
+!outputs/tables/.gitkeep
+!outputs/maps/.gitkeep
+
+# Common geo/data file types (in case they land outside data/)
+*.gpkg
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.pbf
+*.parquet
+*.npz
+*.npy
+*.pt
+*.pth
+*.gpickle
+*.emb
+*.edg
+
+# OS / editor
+.DS_Store
+*.log

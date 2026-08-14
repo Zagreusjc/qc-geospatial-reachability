@@ -1,0 +1,31 @@
+# Neural Distance Oracle for Quezon City -- pinned dependencies
+# Python 3.10 recommended. Install with:  pip install -r requirements.txt
+
+# --- Graph construction & geospatial ---
+osmnx==2.0.1              # OpenStreetMap road-network graph construction
+networkx==3.2.1           # Tarjan SCC, Brandes EBC, Dijkstra
+geopandas==0.14.4         # spatial joins, boundary clipping, CRS management
+shapely==2.0.4            # geometry ops (used by geopandas)
+pyproj==3.6.1             # CRS transforms
+requests==2.32.3          # dataset downloads (HDX / geoBoundaries)
+
+# --- Graph representation learning ---
+pecanpy==2.0.9            # Node2Vec+ (weight-aware biased walks; extend=True)
+gensim==4.3.3             # Skip-Gram word2vec backing the embeddings
+numpy==1.26.4             # pinned <2 for compatibility with the stack
+
+# --- Neural oracle (Siamese / MLP) ---
+torch==2.1.2              # model definition, training, evaluation
+
+# --- Sampling, metrics, data handling ---
+scikit-learn==1.3.2       # train/test utilities, Euclidean baseline helpers
+scipy==1.11.4             # scipy.stats.spearmanr, bootstrap
+pandas==2.1.4             # tabular I/O
+pyarrow==15.0.2           # parquet caching of graph/labels
+
+# --- Visualization / output ---
+folium==0.15.1            # choropleth Structural Distance Maps
+matplotlib==3.8.4         # distribution + training-curve figures
+
+# --- Utilities ---
+tqdm==4.66.4              # progress bars for long-running phases
