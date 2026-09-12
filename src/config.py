@@ -121,9 +121,10 @@ DEFAULT_ROAD_CLASS = "residential"
 # ---------------------------------------------------------------------------
 # Edge Betweenness Centrality (Phase 2)
 # ---------------------------------------------------------------------------
-# "exact" = full Brandes (slow, hours+ on ~70k nodes);
-# "approx" = k sampled source nodes (recommended for development / limited CPU).
-EBC_MODE = "approx"
+# "exact" = full Brandes over every node (Chapter III; required for all reported
+# results); "approx" = k sampled pivots, kept only as an option for quick local
+# iteration -- never the default.
+EBC_MODE = "exact"
 EBC_K = 3000            # number of sampled pivots when EBC_MODE == "approx"
 EBC_SEED = 42           # fixed seed so approximate EBC is reproducible
 # EBC uses unweighted shortest paths (weight=None) per the manuscript, then is
@@ -180,7 +181,15 @@ EARLY_STOPPING_PATIENCE = 10        # on validation MAE
 BATCH_SIZE = 1024
 LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS
 STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval
-DEVICE = "cpu"                      # no GPU in this environment; "cuda" if available
+
+# Auto-detects a CUDA GPU; falls back to CPU if torch isn't installed with CUDA
+# support or no GPU is present. Override by setting the env var PIPELINE_DEVICE.
+import os as _os
+try:
+    import torch as _torch
+    DEVICE = _os.environ.get("PIPELINE_DEVICE") or ("cuda" if _torch.cuda.is_available() else "cpu")
+except ImportError:
+    DEVICE = _os.environ.get("PIPELINE_DEVICE", "cpu")
 
 # Layer widths shared by both architectures (per manuscript tables).
 SIAMESE_BRANCH_DIMS = [128, 256, 128, 64]  # input -> ... -> latent
@@ -194,6 +203,16 @@ HIGH_DIVERGENCE_PERCENTILE = 95    # high-divergence pairs threshold (Euclidean 
 THORUP_ZWICK_K = [2, 3]            # (2k-1) stretch reference points: 3 and 5
 BOOTSTRAP_RESAMPLES = 1000
 COHENS_D_THRESHOLD = 0.5           # substantive effect size for ablation comparisons
+
+# ---------------------------------------------------------------------------
+# Isolation scoring (Phase 9)
+# ---------------------------------------------------------------------------
+# Every node's isolation score is the mean predicted distance to every other
+# node (exhaustive, not sampled). Batch sizes below only bound how many
+# (source, target) pairs are held in memory/VRAM at once; they don't change
+# which pairs are scored.
+ISOLATION_SOURCE_BATCH = 128
+ISOLATION_TARGET_BATCH = 4096
 
 
 # ---------------------------------------------------------------------------
