@@ -2,16 +2,17 @@
 
 Turns the best oracle's distance estimates into the barangay-level output.
 
-Steps   : per-node distance estimates from the best oracle (default: highest
+Steps   : per-node isolation score from the best oracle (default: highest
           test-set Spearman rho in ablation_results.csv, expected A-W3-*) ->
           spatial join nodes to barangay polygons -> mean structural isolation
           score per barangay -> Folium choropleth of the 142 barangays, with
           the high-divergence pairs on a second layer.
 
-Per-node isolation score: querying all ~31,778^2 node pairs is intractable even
-at O(1) query time per pair, so each node's score is estimated from its
-predicted distance to a fixed random sample of other nodes (config-documented
-below as N_ISOLATION_SAMPLE, not silently capped).
+Per-node isolation score: the exhaustive mean of the oracle's predicted
+distance from that node to every other node in the graph (~31,778 x ~31,778
+pairs total). Computed in nested batches (config.ISOLATION_SOURCE_BATCH x
+config.ISOLATION_TARGET_BATCH) so the full pairwise set never has to be held
+in memory/VRAM at once.
 
 Inputs  : outputs/models/ best run, outputs/tables/ablation_results.csv,
           data/processed/qc_barangays.gpkg, data/processed/nodes_scc.parquet,
@@ -41,8 +42,6 @@ models_mod = import_module("06_models")
 
 log = get_logger("09_isolation_choropleth")
 
-N_ISOLATION_SAMPLE = 300  # random target nodes per source, for the Monte Carlo isolation estimate
-
 
 def _pick_best_run(run_id: str | None):
     if run_id:
@@ -63,38 +62,50 @@ def _pick_best_run(run_id: str | None):
     return config.MODELS_DIR / f"{best['run_id']}.pt"
 
 
-def _node_isolation_scores(checkpoint, seed: int) -> pd.DataFrame:
+def _node_isolation_scores(checkpoint) -> pd.DataFrame:
+    device = config.DEVICE
     weight, arch = checkpoint["weight_condition"], checkpoint["arch"]
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
-    Z_t = torch.from_numpy(Z)
     n_nodes = Z.shape[0]
+    Z_t = torch.from_numpy(Z).to(device)
 
-    model = models_mod.build_model(arch)
+    model = models_mod.build_model(arch).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
-    rng = np.random.default_rng(seed)
-    sample_size = min(N_ISOLATION_SAMPLE, n_nodes - 1)
-    log.info("Estimating per-node isolation via %d sampled targets/node (out of %d nodes)",
-             sample_size, n_nodes)
+    sigma, mu = checkpoint["sigma"], checkpoint["mu"]
+    src_batch = config.ISOLATION_SOURCE_BATCH
+    tgt_batch = config.ISOLATION_TARGET_BATCH
+    log.info("Exhaustive per-node isolation: %d x %d pairs (source batch=%d, target batch=%d, device=%s)",
+              n_nodes, n_nodes, src_batch, tgt_batch, device)
 
-    scores = np.empty(n_nodes, dtype=np.float64)
-    batch = 512
+    sums = torch.zeros(n_nodes, dtype=torch.float64, device=device)
     with torch.no_grad():
-        for start in range(0, n_nodes, batch):
-            end = min(start + batch, n_nodes)
-            src_idx = np.arange(start, end)
-            targets = rng.integers(0, n_nodes, size=(end - start, sample_size))
-            same = targets == src_idx[:, None]
-            targets[same] = (targets[same] + 1) % n_nodes  # avoid self-pairs
+        # Sum of predicted distance to every other node, including self-pairs
+        # for now -- the self-pair contribution is computed once and removed
+        # below, which is simpler than masking it out of every batch.
+        for s_start in range(0, n_nodes, src_batch):
+            s_end = min(s_start + src_batch, n_nodes)
+            n_src = s_end - s_start
+            src_idx = torch.arange(s_start, s_end, device=device)
 
-            src_rep = np.repeat(src_idx, sample_size)
-            tgt_flat = targets.reshape(-1)
-            pred_std = model(Z_t[src_rep], Z_t[torch.from_numpy(tgt_flat)])
-            pred = (pred_std * checkpoint["sigma"] + checkpoint["mu"]).numpy()
-            pred = pred.reshape(end - start, sample_size)
-            scores[start:end] = pred.mean(axis=1)
+            for t_start in range(0, n_nodes, tgt_batch):
+                t_end = min(t_start + tgt_batch, n_nodes)
+                n_tgt = t_end - t_start
+                tgt_idx = torch.arange(t_start, t_end, device=device)
 
+                src_rep = src_idx.repeat_interleave(n_tgt)
+                tgt_rep = tgt_idx.repeat(n_src)
+                pred_std = model(Z_t[src_rep], Z_t[tgt_rep])
+                pred = (pred_std.double() * sigma + mu).view(n_src, n_tgt)
+                sums[s_start:s_end] += pred.sum(dim=1)
+
+            log.info("  isolation: sources %d/%d done", s_end, n_nodes)
+
+        self_pred = model(Z_t, Z_t).double() * sigma + mu  # d(u, u) for every node
+        sums -= self_pred
+
+    scores = (sums / (n_nodes - 1)).cpu().numpy()
     node_index_df = pd.read_parquet(config.PROCESSED_DIR / "node_index.parquet")
     return pd.DataFrame({"node_id": node_index_df["node_id"].to_numpy(), "isolation_score": scores})
 
@@ -104,12 +115,12 @@ def main(args: argparse.Namespace) -> None:
     log.info("Building Structural Distance Maps for %d barangays", config.N_BARANGAYS)
 
     run_path = _pick_best_run(args.run_id)
-    checkpoint = torch.load(run_path, weights_only=False)
+    checkpoint = torch.load(run_path, map_location=config.DEVICE, weights_only=False)
     log.info("Using run %s (%s / %s / seed %s)",
              run_path.stem, checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"])
 
-    with timed(log, "estimate per-node isolation scores"):
-        node_scores = _node_isolation_scores(checkpoint, seed=config.SAMPLING_SEED)
+    with timed(log, "compute per-node isolation scores"):
+        node_scores = _node_isolation_scores(checkpoint)
 
     with timed(log, "spatial join nodes -> barangays"):
         # nodes_scc.parquet is indexed by "osmid" (our graph node id) and already
