@@ -2,7 +2,7 @@
 # Python 3.10 recommended. Install with:  pip install -r requirements.txt
 
 # --- Graph construction & geospatial ---
-osmnx==2.0.1              # OpenStreetMap road-network graph construction
+osmnx==1.9.4              # OpenStreetMap road-network graph construction (matches manuscript Ch.III software list; osmnx>=2.0 requires geopandas>=1.0, conflicting with the pin below)
 networkx==3.2.1           # Tarjan SCC, Brandes EBC, Dijkstra
 geopandas==0.14.4         # spatial joins, boundary clipping, CRS management
 shapely==2.0.4            # geometry ops (used by geopandas)

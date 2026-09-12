@@ -55,11 +55,30 @@ N_BARANGAYS = 142              # expected barangay count for validation
 HOTOSM_ROADS_HDX = "https://data.humdata.org/dataset/hotosm_phl_roads"
 
 # PSA / NAMRIA COD-AB administrative boundaries (ADM3 city clip + ADM4 barangays).
+#
+# NOTE on attribution: COD-AB Philippines is a single dataset jointly credited to
+# NAMRIA (the National Mapping and Resource Information Authority, which produces
+# and maintains the actual boundary *geometry*) and PSA (which assigns the PSGC
+# administrative codes/names joined onto that geometry). "PSA boundaries" and
+# "NAMRIA boundaries" therefore refer to the same file, not two different sources --
+# ladder item 1 below already is that file.
 COD_AB_HDX = "https://data.humdata.org/dataset/cod-ab-phl"
+
+# Local path to the already-extracted COD-AB geodatabase (HDX resource
+# phl_admin_boundaries.gdb.zip). Too large (~344MB zipped) to re-download on every
+# run, so it is cached here once and read directly by 01b_barangays.py.
+ADMIN_GDB_RAW = RAW_DIR / "phl_admin_boundaries.gdb"
+
+# Quezon City filter used against the ADM4 (barangay) layer's ADM3 fields.
+# Prefer matching on the PSGC code column (name containing "PCODE", expected
+# pattern "PH1374...") once confirmed from the actual attribute table -- Philippine
+# admin names vary in casing/prefixing ("Quezon City" vs "City of Quezon") across
+# dataset vintages, so name matching is a fallback, not the primary filter.
+ADM3_FILTER_NAME = "Quezon City"
 
 # Barangay-boundary fallback ladder (first that resolves wins; see 01b_barangays.py).
 BARANGAY_SOURCES = [
-    {"name": "hdx_cod_ab_adm4", "url": COD_AB_HDX},
+    {"name": "hdx_cod_ab_adm4", "url": ADMIN_GDB_RAW},
     {"name": "curated_psa_namria",
      "url": "https://github.com/bendlikeabamboo/barangay-boundaries-repository"},
     {"name": "osm_admin_level_10", "url": None},  # fetched live via OSMnx/Overpass
@@ -116,6 +135,11 @@ EBC_SEED = 42           # fixed seed so approximate EBC is reproducible
 ALPHA = 1.0                       # EBC load multiplier in W3 = W1 * (1 + alpha * EBC_norm)
 ALPHA_SENSITIVITY = [0.5, 1.0, 2.0]  # supplementary sensitivity sweep
 WEIGHT_CONDITIONS = ["W1", "W2", "W3"]
+WEIGHT_CONDITION_LABELS = {
+    "W1": "traversal cost only (length / speed)",
+    "W2": "structural load only (normalized EBC)",
+    "W3": "composite: W1 * (1 + alpha * EBC_norm) -- primary condition",
+}
 
 # ---------------------------------------------------------------------------
 # Node2Vec+ embeddings (Phase 4)
