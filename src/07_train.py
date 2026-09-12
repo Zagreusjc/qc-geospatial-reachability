@@ -22,9 +22,17 @@ import argparse
 import os
 import sys
 
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn, optim
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
-from utils import get_logger, not_implemented  # noqa: E402
+from utils import get_logger, timed  # noqa: E402
+from importlib import import_module  # noqa: E402
+
+models_mod = import_module("06_models")
 
 log = get_logger("07_train")
 
@@ -40,19 +48,162 @@ def selected_runs(args: argparse.Namespace):
         yield weight, arch, seed
 
 
+def _load_pairs(weight: str, split: str) -> pd.DataFrame:
+    path = config.PROCESSED_DIR / f"pairs_{split}_{weight}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found; run 05_sampling_labels.py first.")
+    return pd.read_parquet(path)
+
+
+def _batches(n: int, batch_size: int, generator: torch.Generator):
+    perm = torch.randperm(n, generator=generator)
+    for i in range(0, n, batch_size):
+        yield perm[i:i + batch_size]
+
+
+def _train_one_run(weight: str, arch: str, seed: int) -> dict:
+    run_id = config.run_id(weight, arch, seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
+    Z_t = torch.from_numpy(Z)
+
+    train_df = _load_pairs(weight, "train")
+    val_df = _load_pairs(weight, "val")
+
+    mu = float(train_df["dist"].mean())
+    sigma = float(train_df["dist"].std())
+    sigma = sigma if sigma > 1e-8 else 1.0
+
+    def to_tensors(df):
+        u_idx = torch.from_numpy(df["u_idx"].to_numpy(dtype=np.int64))
+        v_idx = torch.from_numpy(df["v_idx"].to_numpy(dtype=np.int64))
+        y = torch.from_numpy(df["dist"].to_numpy(dtype=np.float32))
+        y_std = (y - mu) / sigma
+        return u_idx, v_idx, y_std, y
+
+    train_u, train_v, train_y_std, _ = to_tensors(train_df)
+    val_u, val_v, val_y_std, val_y_raw = to_tensors(val_df)
+
+    model = models_mod.build_model(arch)
+    optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
+    loss_fn = nn.MSELoss()
+    gen = torch.Generator().manual_seed(seed)
+
+    best_val_mae = float("inf")
+    best_state = None
+    epochs_without_improvement = 0
+    history = []
+
+    n_train = len(train_df)
+    for epoch in range(config.EPOCHS):
+        model.train()
+        epoch_loss = 0.0
+        n_batches = 0
+        for batch_idx in _batches(n_train, config.BATCH_SIZE, gen):
+            zu = Z_t[train_u[batch_idx]]
+            zv = Z_t[train_v[batch_idx]]
+            target = train_y_std[batch_idx]
+
+            optimizer.zero_grad()
+            pred = model(zu, zv)
+            loss = loss_fn(pred, target)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            n_batches += 1
+        scheduler.step()
+
+        model.eval()
+        with torch.no_grad():
+            val_pred_std = model(Z_t[val_u], Z_t[val_v])
+            val_pred_raw = val_pred_std * sigma + mu
+            val_mae = torch.mean(torch.abs(val_pred_raw - val_y_raw)).item()
+
+        history.append({"epoch": epoch, "train_loss": epoch_loss / max(n_batches, 1), "val_mae": val_mae})
+
+        if val_mae < best_val_mae - 1e-6:
+            best_val_mae = val_mae
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= config.EARLY_STOPPING_PATIENCE:
+                log.info("%s: early stopping at epoch %d (best val MAE=%.4f)", run_id, epoch, best_val_mae)
+                break
+
+    model.load_state_dict(best_state)
+    checkpoint = {
+        "state_dict": best_state,
+        "arch": arch,
+        "weight_condition": weight,
+        "seed": seed,
+        "mu": mu,
+        "sigma": sigma,
+        "best_val_mae": best_val_mae,
+        "n_epochs_trained": len(history),
+    }
+    out_path = config.MODELS_DIR / f"{run_id}.pt"
+    torch.save(checkpoint, out_path)
+    log.info("%s: best val MAE=%.4f after %d epochs -> %s", run_id, best_val_mae, len(history), out_path)
+
+    _plot_training_curve(run_id, history)
+    return checkpoint
+
+
+def _plot_training_curve(run_id: str, history: list) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    epochs = [h["epoch"] for h in history]
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(epochs, [h["train_loss"] for h in history], label="train MSE (standardized)", color="#3b6ea5")
+    ax1.set_xlabel("epoch")
+    ax1.set_ylabel("train MSE (standardized)")
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, [h["val_mae"] for h in history], label="val MAE (raw units)", color="#d97642")
+    ax2.set_ylabel("val MAE (raw units)")
+    fig.legend(loc="upper right")
+    ax1.set_title(f"Training curve: {run_id}")
+    fig.tight_layout()
+    fig_path = config.FIGURES_DIR / f"{run_id}_training_curve.png"
+    fig.savefig(fig_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main(args: argparse.Namespace) -> None:
     config.ensure_dirs()
     runs = list(selected_runs(args))
     log.info("Selected %d ablation run(s):", len(runs))
     for weight, arch, seed in runs:
-        log.info("  %s", config.run_id(weight, arch, seed))
-    not_implemented(__file__)
+        log.info("  %s  (weight=%s: %s | arch=%s | seed=%d)",
+                 config.run_id(weight, arch, seed), weight,
+                 config.WEIGHT_CONDITION_LABELS[weight], arch, seed)
+
+    for weight, arch, seed in runs:
+        run_id = config.run_id(weight, arch, seed)
+        log.info(">>> Now training %s -- weight condition %s: %s",
+                 run_id, weight, config.WEIGHT_CONDITION_LABELS[weight])
+        with timed(log, f"train {run_id}"):
+            _train_one_run(weight, arch, seed)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--condition", choices=config.WEIGHT_CONDITIONS, default=None)
-    parser.add_argument("--arch", choices=config.ARCHITECTURES, default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--condition", choices=config.WEIGHT_CONDITIONS, default=None,
+        help="friction-weight condition to train (default: all three). "
+             + " | ".join(f"{k}={v}" for k, v in config.WEIGHT_CONDITION_LABELS.items()),
+    )
+    parser.add_argument(
+        "--arch", choices=config.ARCHITECTURES, default=None,
+        help="architecture to train (default: both). siamese=A, mlp=B",
+    )
+    parser.add_argument("--seed", type=int, default=None,
+                         help="single seed to train (default: all of config.SEEDS)")
     main(parser.parse_args())
