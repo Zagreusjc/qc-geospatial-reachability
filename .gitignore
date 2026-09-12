@@ -48,3 +48,9 @@ outputs/maps/*
 # OS / editor
 .DS_Store
 *.log
+
+# Archived local experiment runs (large, regenerable, not meant for the repo)
+runs_archive/
+
+# Local-only notes (never pushed -- see the file itself for why)
+*.local.md
