@@ -115,23 +115,24 @@ def _great_circle_distances_meters(test_df: pd.DataFrame) -> np.ndarray:
 
 
 def _evaluate_run(run_path) -> dict:
-    checkpoint = torch.load(run_path, weights_only=False)
+    device = config.DEVICE
+    checkpoint = torch.load(run_path, map_location=device, weights_only=False)
     weight, arch, seed = checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"]
     run_id = config.run_id(weight, arch, seed)
 
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
-    Z_t = torch.from_numpy(Z)
+    Z_t = torch.from_numpy(Z).to(device)
     test_df = _load_test_pairs(weight)
 
-    model = models_mod.build_model(arch)
+    model = models_mod.build_model(arch).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
-    u_idx = torch.from_numpy(test_df["u_idx"].to_numpy(dtype=np.int64))
-    v_idx = torch.from_numpy(test_df["v_idx"].to_numpy(dtype=np.int64))
+    u_idx = torch.from_numpy(test_df["u_idx"].to_numpy(dtype=np.int64)).to(device)
+    v_idx = torch.from_numpy(test_df["v_idx"].to_numpy(dtype=np.int64)).to(device)
     with torch.no_grad():
         pred_std = model(Z_t[u_idx], Z_t[v_idx])
-    pred = (pred_std * checkpoint["sigma"] + checkpoint["mu"]).numpy()
+    pred = (pred_std * checkpoint["sigma"] + checkpoint["mu"]).cpu().numpy()
     y_true = test_df["dist"].to_numpy()
 
     metrics = _metrics(y_true, pred)
