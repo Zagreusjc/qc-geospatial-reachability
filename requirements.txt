@@ -1,5 +1,15 @@
 # Neural Distance Oracle for Quezon City -- pinned dependencies
 # Python 3.10 recommended. Install with:  pip install -r requirements.txt
+#
+# GPU (CUDA) machines: plain `pip install -r requirements.txt` installs the
+# CPU-only torch wheel from PyPI. For CUDA, instead run:
+#   pip install -r requirements.txt
+#   pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu121
+# That second command pulls in networkx>=3.4 as a transitive dependency,
+# which breaks the networkx==3.2.1 pin above (and osmnx's own
+# networkx<3.4 requirement) -- always re-run
+# `pip install networkx==3.2.1` immediately after, then confirm with
+# `pip check` before trusting anything downstream of it.
 
 # --- Graph construction & geospatial ---
 osmnx==1.9.4              # OpenStreetMap road-network graph construction (matches manuscript Ch.III software list; osmnx>=2.0 requires geopandas>=1.0, conflicting with the pin below)
