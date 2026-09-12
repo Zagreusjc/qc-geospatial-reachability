@@ -55,8 +55,8 @@ def _load_pairs(weight: str, split: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def _batches(n: int, batch_size: int, generator: torch.Generator):
-    perm = torch.randperm(n, generator=generator)
+def _batches(n: int, batch_size: int, generator: torch.Generator, device: str):
+    perm = torch.randperm(n, generator=generator).to(device)
     for i in range(0, n, batch_size):
         yield perm[i:i + batch_size]
 
@@ -65,9 +65,10 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     run_id = config.run_id(weight, arch, seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
+    device = config.DEVICE
 
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
-    Z_t = torch.from_numpy(Z)
+    Z_t = torch.from_numpy(Z).to(device)
 
     train_df = _load_pairs(weight, "train")
     val_df = _load_pairs(weight, "val")
@@ -77,16 +78,16 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     sigma = sigma if sigma > 1e-8 else 1.0
 
     def to_tensors(df):
-        u_idx = torch.from_numpy(df["u_idx"].to_numpy(dtype=np.int64))
-        v_idx = torch.from_numpy(df["v_idx"].to_numpy(dtype=np.int64))
-        y = torch.from_numpy(df["dist"].to_numpy(dtype=np.float32))
+        u_idx = torch.from_numpy(df["u_idx"].to_numpy(dtype=np.int64)).to(device)
+        v_idx = torch.from_numpy(df["v_idx"].to_numpy(dtype=np.int64)).to(device)
+        y = torch.from_numpy(df["dist"].to_numpy(dtype=np.float32)).to(device)
         y_std = (y - mu) / sigma
         return u_idx, v_idx, y_std, y
 
     train_u, train_v, train_y_std, _ = to_tensors(train_df)
     val_u, val_v, val_y_std, val_y_raw = to_tensors(val_df)
 
-    model = models_mod.build_model(arch)
+    model = models_mod.build_model(arch).to(device)
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
     loss_fn = nn.MSELoss()
@@ -102,7 +103,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
         model.train()
         epoch_loss = 0.0
         n_batches = 0
-        for batch_idx in _batches(n_train, config.BATCH_SIZE, gen):
+        for batch_idx in _batches(n_train, config.BATCH_SIZE, gen, device):
             zu = Z_t[train_u[batch_idx]]
             zv = Z_t[train_v[batch_idx]]
             target = train_y_std[batch_idx]
@@ -127,7 +128,8 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
         if val_mae < best_val_mae - 1e-6:
             best_val_mae = val_mae
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            # Saved on CPU regardless of training device, so any machine can load it.
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
