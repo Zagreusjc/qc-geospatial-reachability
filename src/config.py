@@ -8,7 +8,6 @@ paths; call `ensure_dirs()` to create the folder tree.
 from __future__ import annotations
 
 from pathlib import Path
-import torch
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -181,7 +180,14 @@ EARLY_STOPPING_PATIENCE = 10        # on validation MAE
 BATCH_SIZE = 1024
 LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS
 STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"               # no GPU in this environment; "cuda" if available
+def _get_device() -> str:
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+DEVICE = _get_device()       # no GPU in this environment; "cuda" if available
 
 # Layer widths shared by both architectures (per manuscript tables).
 SIAMESE_BRANCH_DIMS = [128, 256, 128, 64]  # input -> ... -> latent

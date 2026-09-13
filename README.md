@@ -63,7 +63,7 @@ Barangay structural-isolation choropleth of Quezon City
 | ID | Alternative hypothesis (Ha) | Tested by |
 |---|---|---|
 | H1 | Node2Vec+ embeddings encode topological proximity well enough to support supervised distance regression (better than chance) | Any oracle vs chance |
-| H2 | The Siamese oracle differs significantly in accuracy from a Euclidean baseline | Oracle vs Euclidean |
+H2 | The Siamese oracle outperforms Euclidean distance as a structural distance approximation | Oracle vs Euclidean |
 | H3 | Adding normalized EBC to edge weights lowers approximation error vs traversal cost alone | W1 vs W3, same architecture |
 | H4 | A Siamese architecture outperforms a single-stream MLP under identical embeddings | Siamese vs MLP, same weights |
 
@@ -123,7 +123,7 @@ For each weight condition, PecanPy's weight-aware Node2Vec+ (`extend=True`) gene
 A 10k pilot sample defines 10 distance deciles. Training (500k) and validation (50k) are **stratified** across deciles for balanced short- and long-range coverage; the test set (50k) is **uniform random** to reflect the natural distance skew. Exact friction-weighted Dijkstra distances are the ground-truth labels, computed per weight condition (directed pairs preserved).
 
 ### Stage 6-7 — Oracle architectures and the 3x2 ablation
-- **Architecture A — Siamese:** shared twin branch `FC(128->256->128->64)` with BatchNorm + ReLU; combine by absolute element-wise difference `|z_u - z_v|`; prediction head `FC(64->32->1)`. Weight sharing enforces symmetry by construction.
+- **Architecture A — Siamese:** shared twin branch `FC(128->256->128->64)` with LayerNorm + ReLU; combine by absolute element-wise difference `|z_u - z_v|`; prediction head `FC(64->32->1)`. Weight sharing enforces symmetry by construction.
 - **Architecture B — MLP baseline:** concatenated `[z_u; z_v]` (256-d) through five FC layers to a linear scalar; symmetry only encouraged via reversed-pair augmentation.
 
 Both are trained with **MSE** against Dijkstra labels using Adam (`lr=1e-3`, `weight_decay=1e-5`), cosine annealing over 100 epochs, early stopping on validation MAE (patience 10). The **3 weights x 2 architectures x 3 seeds = 18 runs** isolate the EBC contribution (H3) and the Siamese contribution (H4).
