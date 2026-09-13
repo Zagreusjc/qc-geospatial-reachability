@@ -61,7 +61,14 @@ class SiameseOracle(nn.Module):
 
 
 class MLPOracle(nn.Module):
-    """Baseline: concatenate both embeddings and feed through a normalized MLP."""
+    """Baseline: concatenate both embeddings and feed through a normalized MLP.
+
+    Symmetry is NOT enforced by construction and NOT augmented during training --
+    this is intentional. The absence of any symmetry mechanism makes the
+    architecture comparison against Siamese (H4) cleaner and more interpretable:
+    any performance gap reflects the architectural advantage of shared-weight
+    twin branches, not augmentation differences.
+    """
 
     def __init__(self, dims=None):
         super().__init__()

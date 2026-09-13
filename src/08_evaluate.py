@@ -119,19 +119,20 @@ def _evaluate_run(run_path) -> dict:
     weight, arch, seed = checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"]
     run_id = config.run_id(weight, arch, seed)
 
+    device = torch.device(config.DEVICE)
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
-    Z_t = torch.from_numpy(Z)
+    Z_t = torch.from_numpy(Z).to(device)
     test_df = _load_test_pairs(weight)
 
-    model = models_mod.build_model(arch)
+    model = models_mod.build_model(arch).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
     u_idx = torch.from_numpy(test_df["u_idx"].to_numpy(dtype=np.int64))
     v_idx = torch.from_numpy(test_df["v_idx"].to_numpy(dtype=np.int64))
     with torch.no_grad():
-        pred_std = model(Z_t[u_idx], Z_t[v_idx])
-    pred = (pred_std * checkpoint["sigma"] + checkpoint["mu"]).numpy()
+        pred_std = model(Z_t[u_idx].to(device), Z_t[v_idx].to(device))
+    pred = (pred_std.cpu() * checkpoint["sigma"] + checkpoint["mu"]).numpy()
     y_true = test_df["dist"].to_numpy()
 
     metrics = _metrics(y_true, pred)

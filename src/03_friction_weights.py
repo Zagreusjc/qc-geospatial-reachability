@@ -62,7 +62,10 @@ def main(args: argparse.Namespace) -> None:
             if ebc_norm is None:
                 ebc_norm = 0.0
                 n_missing_ebc += 1
-            w2 = ebc_norm
+            # Floor W2 to small epsilon to avoid zero-cost edges in Dijkstra
+            # (zero-cost edges collapse path distances to 0, causing pairs to be dropped)
+            W2_EPSILON = 1e-6
+            w2 = max(ebc_norm, W2_EPSILON)
             w3 = w1 * (1 + config.ALPHA * ebc_norm)
 
             row = {

@@ -66,8 +66,9 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    device = torch.device(config.DEVICE)
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
-    Z_t = torch.from_numpy(Z)
+    Z_t = torch.from_numpy(Z).to(device)
 
     train_df = _load_pairs(weight, "train")
     val_df = _load_pairs(weight, "val")
@@ -86,7 +87,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     train_u, train_v, train_y_std, _ = to_tensors(train_df)
     val_u, val_v, val_y_std, val_y_raw = to_tensors(val_df)
 
-    model = models_mod.build_model(arch)
+    model = models_mod.build_model(arch).to(device)
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
     loss_fn = nn.MSELoss()
@@ -103,9 +104,9 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
         epoch_loss = 0.0
         n_batches = 0
         for batch_idx in _batches(n_train, config.BATCH_SIZE, gen):
-            zu = Z_t[train_u[batch_idx]]
-            zv = Z_t[train_v[batch_idx]]
-            target = train_y_std[batch_idx]
+            zu = Z_t[train_u[batch_idx]].to(device)
+            zv = Z_t[train_v[batch_idx]].to(device)
+            target = train_y_std[batch_idx].to(device)
 
             optimizer.zero_grad()
             pred = model(zu, zv)
@@ -119,9 +120,9 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
         model.eval()
         with torch.no_grad():
-            val_pred_std = model(Z_t[val_u], Z_t[val_v])
+            val_pred_std = model(Z_t[val_u].to(device), Z_t[val_v].to(device))
             val_pred_raw = val_pred_std * sigma + mu
-            val_mae = torch.mean(torch.abs(val_pred_raw - val_y_raw)).item()
+            val_mae = torch.mean(torch.abs(val_pred_raw - val_y_raw.to(device))).item()
 
         history.append({"epoch": epoch, "train_loss": epoch_loss / max(n_batches, 1), "val_mae": val_mae})
 

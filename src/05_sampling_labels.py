@@ -83,9 +83,14 @@ def _decile_bucket(d: float, cutoffs: np.ndarray) -> int:
 
 
 def _collect_pair_pool(G: nx.MultiDiGraph, nodes: list, target_total: int, rng: random.Random) -> dict:
-    """Run single_source_dijkstra_path_length from random sources (without
-    repeats) until the pool of deduped, directed (u,v)->dist pairs with d>0
-    reaches at least target_total."""
+    """Run single_source_dijkstra_path_length from many random sources, capping
+    targets per source so that the pool draws from a wide spread of source nodes
+    rather than exhausting the target space from just ~34 sources.
+
+    With TARGETS_PER_SOURCE=200 and ~32k nodes, we need ~5,400 sources to fill
+    a pool of 1,080,000 -- giving genuine (u,v) diversity across the SCC.
+    """
+    TARGETS_PER_SOURCE = 200  # cap targets per source for wide node coverage
     pool: dict = {}
     shuffled = list(nodes)
     rng.shuffle(shuffled)
@@ -93,16 +98,38 @@ def _collect_pair_pool(G: nx.MultiDiGraph, nodes: list, target_total: int, rng: 
         if len(pool) >= target_total:
             break
         dist_dict = nx.single_source_dijkstra_path_length(G, src, weight="w")
-        for tgt, d in dist_dict.items():
-            if tgt == src or d <= 0:
-                continue
-            pool[(src, tgt)] = d
+        candidates = [(t, d) for t, d in dist_dict.items() if t != src and d > 0]
+        if not candidates:
+            continue
+        sample_size = min(len(candidates), TARGETS_PER_SOURCE)
+        for t, d in rng.sample(candidates, sample_size):
+            pool[(src, t)] = d
+    log.info(
+        "Pool: %d deduped directed pairs from %d+ unique source nodes",
+        len(pool), min(len(shuffled), target_total // TARGETS_PER_SOURCE),
+    )
     return pool
 
-
 def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> dict:
+    """Draw test set FIRST uniformly at random from the full pool (natural distance
+    skew, shared node-pair identity across conditions), then stratify train/val
+    from what remains.
+
+    Fix 1: test set is now a true uniform random draw -- not biased leftover residual.
+    Fix 2: caller must pass the same pool keys across conditions so the same (u,v)
+           pairs appear in every condition's test set (label them separately per condition).
+    """
+    all_pairs = list(pool.items())
+    rng.shuffle(all_pairs)
+
+    # Draw test set FIRST -- uniform random, reflects natural distance skew
+    n_test = min(config.N_TEST, len(all_pairs))
+    test_items = all_pairs[:n_test]
+    remaining = all_pairs[n_test:]
+
+    # Stratify train/val from what remains
     buckets: dict = {i: [] for i in range(config.N_DECILES)}
-    for (u, v), d in pool.items():
+    for (u, v), d in remaining:
         buckets[_decile_bucket(d, cutoffs)].append((u, v, d))
     for b in buckets.values():
         rng.shuffle(b)
@@ -110,7 +137,7 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
     n_train_per_bucket = config.N_TRAIN // config.N_DECILES
     n_val_per_bucket = config.N_VAL // config.N_DECILES
 
-    train_rows, val_rows, leftover_rows = [], [], []
+    train_rows, val_rows = [], []
     for bucket_idx, items in buckets.items():
         n_train_here = min(n_train_per_bucket, len(items))
         n_val_here = min(n_val_per_bucket, len(items) - n_train_here)
@@ -121,14 +148,13 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
             )
         train_rows.extend(items[:n_train_here])
         val_rows.extend(items[n_train_here:n_train_here + n_val_here])
-        leftover_rows.extend(items[n_train_here + n_val_here:])
 
-    rng.shuffle(leftover_rows)
-    n_test = min(config.N_TEST, len(leftover_rows))
-    if n_test < config.N_TEST:
-        log.warning("Leftover pool short for test set: has %d, needed %d", len(leftover_rows), config.N_TEST)
-    test_rows = leftover_rows[:n_test]
+    test_rows = [(u, v, d) for (u, v), d in test_items]
 
+    log.info(
+        "Split: train=%d val=%d test=%d (test drawn first, uniform random)",
+        len(train_rows), len(val_rows), len(test_rows),
+    )
     return {"train": train_rows, "val": val_rows, "test": test_rows}
 
 

@@ -8,6 +8,7 @@ paths; call `ensure_dirs()` to create the folder tree.
 from __future__ import annotations
 
 from pathlib import Path
+import torch
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -180,7 +181,7 @@ EARLY_STOPPING_PATIENCE = 10        # on validation MAE
 BATCH_SIZE = 1024
 LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS
 STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval
-DEVICE = "cpu"                      # no GPU in this environment; "cuda" if available
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"               # no GPU in this environment; "cuda" if available
 
 # Layer widths shared by both architectures (per manuscript tables).
 SIAMESE_BRANCH_DIMS = [128, 256, 128, 64]  # input -> ... -> latent
@@ -192,7 +193,7 @@ MLP_DIMS = [256, 256, 128, 64, 32, 1]      # concat[z_u; z_v] -> scalar distance
 # ---------------------------------------------------------------------------
 HIGH_DIVERGENCE_PERCENTILE = 95    # high-divergence pairs threshold (Euclidean distortion)
 THORUP_ZWICK_K = [2, 3]            # (2k-1) stretch reference points: 3 and 5
-BOOTSTRAP_RESAMPLES = 1000
+BOOTSTRAP_RESAMPLES = 10000
 COHENS_D_THRESHOLD = 0.5           # substantive effect size for ablation comparisons
 
 
