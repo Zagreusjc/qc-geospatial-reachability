@@ -26,11 +26,11 @@ import argparse
 import os
 import sys
 
+import torch
 import folium
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -146,6 +146,12 @@ def main(args: argparse.Namespace) -> None:
         barangays_scored = barangays.merge(
             barangay_scores, left_on=name_col, right_on="barangay_name", how="left"
         )
+        # Drop non-JSON-serializable timestamp columns from GDB
+        ts_cols = barangays_scored.select_dtypes(
+            include=["datetime64[ns]", "datetimetz"]
+        ).columns.tolist()
+        if ts_cols:
+            barangays_scored = barangays_scored.drop(columns=ts_cols)
         centroid = barangays_scored.geometry.unary_union.centroid
         fmap = folium.Map(location=[centroid.y, centroid.x], zoom_start=11, tiles="cartodbpositron")
 

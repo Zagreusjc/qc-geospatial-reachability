@@ -30,9 +30,9 @@ import argparse
 import os
 import sys
 
+import torch
 import numpy as np
 import pandas as pd
-import torch
 from scipy.stats import spearmanr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
