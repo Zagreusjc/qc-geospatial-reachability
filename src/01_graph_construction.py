@@ -40,7 +40,8 @@ from utils import get_logger, timed  # noqa: E402
 
 log = get_logger("01_graph_construction")
 
-ONEWAY_TRUE = {"yes", "true", "1", "-1"}
+ONEWAY_FORWARD = {"yes", "true", "1"}  # travel legal only along the digitized direction (u->v)
+ONEWAY_REVERSE = {"-1"}                # OSM oneway=-1: travel legal only against it (v->u)
 
 
 _ROADS_DATA_EXTS = (".gpkg", ".geojson", ".json", ".shp", ".osm", ".xml", ".pbf")
@@ -196,6 +197,7 @@ def _build_graph_from_line_gdf(path, boundary) -> tuple[nx.MultiDiGraph, dict]:
 
     node_id_of: dict = {}
     node_coords: list = []
+    n_reverse_only = 0
 
     def node_id_for(pt):
         if pt not in node_id_of:
@@ -214,17 +216,24 @@ def _build_graph_from_line_gdf(path, boundary) -> tuple[nx.MultiDiGraph, dict]:
         u = node_id_for(coords[0])
         v = node_id_for(coords[-1])
         oneway_raw = str(row["oneway"]).strip().lower() if row["oneway"] else "no"
-        oneway = oneway_raw in ONEWAY_TRUE
+        is_reverse_only = oneway_raw in ONEWAY_REVERSE
+        oneway = oneway_raw in ONEWAY_FORWARD or is_reverse_only
 
         attrs = dict(highway=row["highway"], oneway=oneway, length=length_m, geometry=geom)
-        G.add_edge(u, v, **attrs)
-        if not oneway:
+        if is_reverse_only:
+            # oneway=-1: legal travel is only against the digitized direction (v->u).
+            n_reverse_only += 1
             G.add_edge(v, u, **{**attrs, "geometry": geom.reverse()})
+        else:
+            G.add_edge(u, v, **attrs)
+            if not oneway:
+                G.add_edge(v, u, **{**attrs, "geometry": geom.reverse()})
 
     for nid, (x, y) in enumerate(node_coords):
         G.add_node(nid, x=x, y=y)
 
-    log.info("Manual graph built: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
+    log.info("Manual graph built: %d nodes, %d edges (%d oneway=-1 segments reversed)",
+              G.number_of_nodes(), G.number_of_edges(), n_reverse_only)
     return G, stats
 
 
