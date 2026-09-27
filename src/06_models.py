@@ -14,6 +14,17 @@ Defines the two neural architectures compared in the ablation:
     norm/activation on the final scalar output). Symmetry is only encouraged via
     reversed-pair training, not enforced by construction.
 
+  Architecture C -- Siamese (order-aware): identical shared twin branch to
+    Architecture A, but the comparison head consumes concat([h_u, h_v]) instead
+    of |h_u - h_v|. |h_u - h_v| is mathematically symmetric (identical for
+    (u,v) and (v,u)), which is the correct inductive bias for a symmetric
+    target but an architectural ceiling on any task where the ground-truth
+    distance is directionally asymmetric (e.g. one-way streets). Concatenation
+    preserves argument order, so the head is free to learn a different output
+    per direction while still using the same shared, weight-tied branch that
+    Architecture A's H4 comparison is actually about. Exploratory diagnostic
+    variant, not part of the primary 3x2x3 ablation design.
+
 Used by 07_train.py and 08_evaluate.py via `build_model(arch)`.
 """
 from __future__ import annotations
@@ -79,13 +90,44 @@ class MLPOracle(nn.Module):
         return self.net(x).squeeze(-1)
 
 
+class SiameseOrderedOracle(nn.Module):
+    """Twin shared-weight branch + concat([h_u, h_v]) order-aware comparison head."""
+
+    def __init__(self, branch_dims=None, head_dims=None):
+        super().__init__()
+        branch_dims = branch_dims or config.SIAMESE_BRANCH_DIMS
+        head_dims = head_dims or config.SIAMESE_ORDERED_HEAD_DIMS
+
+        branch_layers = []
+        for i in range(len(branch_dims) - 1):
+            branch_layers.append(nn.Linear(branch_dims[i], branch_dims[i + 1]))
+            branch_layers.append(nn.LayerNorm(branch_dims[i + 1]))
+            branch_layers.append(nn.ReLU())
+        self.branch = nn.Sequential(*branch_layers)
+
+        head_layers = []
+        for i in range(len(head_dims) - 1):
+            head_layers.append(nn.Linear(head_dims[i], head_dims[i + 1]))
+            if i < len(head_dims) - 2:
+                head_layers.append(nn.ReLU())
+        self.head = nn.Sequential(*head_layers)
+
+    def forward(self, z_u: torch.Tensor, z_v: torch.Tensor) -> torch.Tensor:
+        h_u = self.branch(z_u)
+        h_v = self.branch(z_v)
+        merged = torch.cat([h_u, h_v], dim=-1)
+        return self.head(merged).squeeze(-1)
+
+
 def build_model(arch: str) -> nn.Module:
-    """Factory returning a Siamese or MLP oracle."""
+    """Factory returning a Siamese, MLP, or order-aware Siamese oracle."""
     if arch == "siamese":
         return SiameseOracle()
     if arch == "mlp":
         return MLPOracle()
-    raise ValueError(f"Unknown architecture: {arch!r}; expected one of {config.ARCHITECTURES}")
+    if arch == "siamese_ordered":
+        return SiameseOrderedOracle()
+    raise ValueError(f"Unknown architecture: {arch!r}; expected one of {config.ARCHITECTURES + ['siamese_ordered']}")
 
 
 if __name__ == "__main__":

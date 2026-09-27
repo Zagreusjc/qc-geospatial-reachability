@@ -195,6 +195,7 @@ except ImportError:
 SIAMESE_BRANCH_DIMS = [128, 256, 128, 64]  # input -> ... -> latent
 SIAMESE_HEAD_DIMS = [64, 32, 1]            # |z_u - z_v| -> scalar distance
 MLP_DIMS = [256, 256, 128, 64, 32, 1]      # concat[z_u; z_v] -> scalar distance
+SIAMESE_ORDERED_HEAD_DIMS = [128, 32, 1]   # concat[h_u, h_v] (order-aware) -> scalar distance
 
 # ---------------------------------------------------------------------------
 # Evaluation (Phase 8)
@@ -232,7 +233,10 @@ def ablation_runs():
                 yield weight, arch, seed
 
 
+ARCH_LETTERS = {"siamese": "A", "mlp": "B", "siamese_ordered": "C"}
+
+
 def run_id(weight: str, arch: str, seed: int) -> str:
     """Canonical identifier for one ablation run, e.g. 'A-W3-seed1'."""
-    arch_letter = "A" if arch == "siamese" else "B"
+    arch_letter = ARCH_LETTERS[arch]
     return f"{arch_letter}-{weight}-seed{seed}"
