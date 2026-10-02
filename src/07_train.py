@@ -126,13 +126,11 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
         history.append({"epoch": epoch, "train_loss": epoch_loss / max(n_batches, 1), "val_mae": val_mae})
 
-        # Relative improvement threshold: an absolute epsilon (e.g. 1e-6) is
-        # meaningless at W1/W3's ~tens-of-seconds MAE scale (patience almost
-        # never fires) but comparatively strict at W2's ~0.01-0.2 scale, where
-        # ordinary validation noise can itself exceed it in the other
-        # direction and trigger a premature stop. Scaling the threshold by
-        # the current best value keeps "improvement" meaning the same
-        # relative amount regardless of the weight condition's units.
+        # Relative improvement threshold, scale-consistent across weight
+        # conditions (kept for consistency, though diagnosis on C-W2-seed1
+        # showed validation-MAE noise at W2's scale, ~0.01-0.04 swings, dwarfs
+        # both this and the old absolute 1e-6 either way -- see
+        # EARLY_STOPPING_PATIENCE below for the change that actually mattered).
         min_delta = 0.0 if best_val_mae == float("inf") else best_val_mae * config.EARLY_STOPPING_MIN_DELTA_REL
         if val_mae < best_val_mae - min_delta:
             best_val_mae = val_mae
