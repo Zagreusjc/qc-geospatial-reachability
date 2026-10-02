@@ -178,6 +178,7 @@ LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-5
 EPOCHS = 100
 EARLY_STOPPING_PATIENCE = 10        # on validation MAE
+EARLY_STOPPING_MIN_DELTA_REL = 0.001  # required improvement, as a fraction of current best val MAE
 BATCH_SIZE = 1024
 LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS
 STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval

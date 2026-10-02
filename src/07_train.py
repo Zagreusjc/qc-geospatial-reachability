@@ -126,7 +126,15 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
         history.append({"epoch": epoch, "train_loss": epoch_loss / max(n_batches, 1), "val_mae": val_mae})
 
-        if val_mae < best_val_mae - 1e-6:
+        # Relative improvement threshold: an absolute epsilon (e.g. 1e-6) is
+        # meaningless at W1/W3's ~tens-of-seconds MAE scale (patience almost
+        # never fires) but comparatively strict at W2's ~0.01-0.2 scale, where
+        # ordinary validation noise can itself exceed it in the other
+        # direction and trigger a premature stop. Scaling the threshold by
+        # the current best value keeps "improvement" meaning the same
+        # relative amount regardless of the weight condition's units.
+        min_delta = 0.0 if best_val_mae == float("inf") else best_val_mae * config.EARLY_STOPPING_MIN_DELTA_REL
+        if val_mae < best_val_mae - min_delta:
             best_val_mae = val_mae
             # Saved on CPU regardless of training device, so any machine can load it.
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
