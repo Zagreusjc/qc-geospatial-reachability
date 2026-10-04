@@ -1,7 +1,7 @@
 """Phase 7 -- Train the 3x2x3 ablation.
 
-Trains every cell of the ablation grid: {W1,W2,W3} x {Siamese, MLP} x {seed 0,1,2}
-= 18 runs (labelled A-W1-seed0 .. B-W3-seed2 via config.run_id).
+Trains every cell of the ablation grid: {W1,W2,W3} x {Siamese, MLP, Siamese-ordered}
+x {seed 0,1,2} = 27 runs (labelled A-W1-seed0 .. C-W3-seed2 via config.run_id).
 
 Training: MSE loss vs Dijkstra labels, Adam (lr=1e-3, weight_decay=1e-5), cosine
 annealing over 100 epochs, early stopping on validation MAE (patience 10), z-score
@@ -12,7 +12,7 @@ Outputs : outputs/models/<run_id>.pt (best checkpoint), training-curve figures.
 Next    : 08_evaluate.py
 
 CLI examples:
-  python src/07_train.py                       # all 18 runs
+  python src/07_train.py                       # all 27 runs
   python src/07_train.py --condition W3         # only W3 cells (6 runs)
   python src/07_train.py --arch siamese --seed 0
 """
@@ -22,10 +22,10 @@ import argparse
 import os
 import sys
 
+import torch  # must load before numpy/pandas on Windows (c10.dll init error otherwise)
+from torch import nn, optim
 import numpy as np
 import pandas as pd
-import torch
-from torch import nn, optim
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -204,8 +204,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--arch", choices=config.ARCHITECTURES, default=None,
-        help="architecture to train (default: both). siamese=A, mlp=B",
+        help="architecture to train (default: all). siamese=A, mlp=B, siamese_ordered=C",
     )
     parser.add_argument("--seed", type=int, default=None,
                          help="single seed to train (default: all of config.SEEDS)")
     main(parser.parse_args())
+

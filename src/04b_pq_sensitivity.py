@@ -22,10 +22,10 @@ import argparse
 import os
 import sys
 
+import torch  # must load before numpy/pandas on Windows
+from torch import device, nn, optim
 import numpy as np
 import pandas as pd
-import torch
-from torch import nn, optim
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -71,7 +71,7 @@ def _train_and_validate(Z: np.ndarray, train_df: pd.DataFrame, val_df: pd.DataFr
     train_u, train_v, train_y_std, _ = to_tensors(train_df)
     val_u, val_v, _, val_y_raw = to_tensors(val_df)
 
-    model = models_mod.build_model("siamese").to(device)
+    model = models_mod.build_model("siamese_ordered").to(device)
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
     loss_fn = nn.MSELoss()

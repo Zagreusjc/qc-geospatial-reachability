@@ -142,7 +142,7 @@ def main(args: argparse.Namespace) -> None:
 
     with timed(log, "read ADM4 layer"):
         layer = _find_adm4_layer(gdb_path)
-        gdf = gpd.read_file(gdb_path, layer=layer)
+        gdf = gpd.read_file(gdb_path, layer=layer, engine="pyogrio")
         log.info("Loaded %d total ADM4 features nationwide, CRS=%s", len(gdf), gdf.crs)
 
     with timed(log, "filter to Quezon City"):

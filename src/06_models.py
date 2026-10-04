@@ -11,8 +11,8 @@ Defines the two neural architectures compared in the ablation:
   Architecture B -- MLP baseline: concatenated [z_u; z_v] (256-d) through five FC
     layers with LayerNorm + ReLU on every hidden layer (matching Architecture A's
     branch normalization scheme), ending in a single linear output neuron (no
-    norm/activation on the final scalar output). Symmetry is only encouraged via
-    reversed-pair training, not enforced by construction.
+    norm/activation on the final scalar output). Symmetry is neither enforced by
+    construction nor encouraged by reversed-pair augmentation (none is used).
 
   Architecture C -- Siamese (order-aware): identical shared twin branch to
     Architecture A, but the comparison head consumes concat([h_u, h_v]) instead
@@ -22,8 +22,8 @@ Defines the two neural architectures compared in the ablation:
     distance is directionally asymmetric (e.g. one-way streets). Concatenation
     preserves argument order, so the head is free to learn a different output
     per direction while still using the same shared, weight-tied branch that
-    Architecture A's H4 comparison is actually about. Exploratory diagnostic
-    variant, not part of the primary 3x2x3 ablation design.
+    Architecture A's H4 comparison is actually about. Trained alongside A and B
+    in the ablation (config.ARCHITECTURES).
 
 Used by 07_train.py and 08_evaluate.py via `build_model(arch)`.
 """
@@ -72,7 +72,12 @@ class SiameseOracle(nn.Module):
 
 
 class MLPOracle(nn.Module):
-    """Baseline: concatenate both embeddings and feed through a normalized MLP."""
+    """Baseline: concatenate both embeddings and feed through a normalized MLP.
+
+    Symmetry is NOT enforced by construction and NOT augmented during training --
+    this is intentional, so any gap versus the Siamese variants (H4) reflects
+    architecture, not augmentation differences.
+    """
 
     def __init__(self, dims=None):
         super().__init__()
@@ -127,7 +132,7 @@ def build_model(arch: str) -> nn.Module:
         return MLPOracle()
     if arch == "siamese_ordered":
         return SiameseOrderedOracle()
-    raise ValueError(f"Unknown architecture: {arch!r}; expected one of {config.ARCHITECTURES + ['siamese_ordered']}")
+    raise ValueError(f"Unknown architecture: {arch!r}; expected one of {config.ARCHITECTURES}")
 
 
 if __name__ == "__main__":

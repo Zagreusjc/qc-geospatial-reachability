@@ -12,7 +12,7 @@ Metrics : Spearman rho (primary, with bootstrap CI), MAE, RMSE, RMSE/MAE ratio,
           W1/W3; normalized betweenness for W2), so only Spearman rho is a
           dimensionally meaningful comparison for it; treat the others as
           illustrative. Ablation: mean +/- std across seeds, Cohen's d (H3: W1
-          vs W3 per arch; H4: Siamese vs MLP per weight) -- effect sizes and
+          vs W3 per arch; H4: each Siamese variant (A, C) vs MLP per weight) -- effect sizes and
           bootstrap CIs are reported in place of a t-test/ANOVA.
 
 High-divergence pairs are defined directly from ground truth vs the Euclidean
@@ -30,9 +30,9 @@ import argparse
 import os
 import sys
 
+import torch  # must load before numpy/pandas on Windows
 import numpy as np
 import pandas as pd
-import torch
 from scipy.stats import spearmanr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -184,15 +184,17 @@ def _cell_aggregates_and_effects(run_rows: list) -> list:
             })
 
     for weight, grp in df.groupby("weight"):
-        siamese = grp[grp["arch"] == "siamese"]["spearman"]
         mlp = grp[grp["arch"] == "mlp"]["spearman"]
-        if len(siamese) and len(mlp):
-            extra_rows.append({
-                "row_type": "cohens_d_H4_siamese_vs_mlp", "run_id": f"cohend-H4-{weight}",
-                "weight": weight, "arch": "siamese_vs_mlp", "seed": "n/a",
-                "cohens_d": _cohens_d(siamese.values, mlp.values),
-                "note": "positive d => Siamese has higher Spearman than MLP",
-            })
+        for siam_arch in ("siamese", "siamese_ordered"):
+            siamese = grp[grp["arch"] == siam_arch]["spearman"]
+            if len(siamese) and len(mlp):
+                extra_rows.append({
+                    "row_type": f"cohens_d_H4_{siam_arch}_vs_mlp",
+                    "run_id": f"cohend-H4-{config.ARCH_LETTERS[siam_arch]}-{weight}",
+                    "weight": weight, "arch": f"{siam_arch}_vs_mlp", "seed": "n/a",
+                    "cohens_d": _cohens_d(siamese.values, mlp.values),
+                    "note": f"positive d => {siam_arch} has higher Spearman than MLP",
+                })
 
     return extra_rows
 

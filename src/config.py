@@ -171,7 +171,7 @@ SAMPLING_SEED = 42
 # ---------------------------------------------------------------------------
 # Oracle training (Phases 6-7)
 # ---------------------------------------------------------------------------
-ARCHITECTURES = ["siamese", "mlp"]   # A and B
+ARCHITECTURES = ["siamese", "mlp", "siamese_ordered"]   # A, B, C (C = order-aware Siamese for one-way asymmetry)
 SEEDS = [0, 1, 2]                    # three seeds per ablation cell
 
 LEARNING_RATE = 1e-3
@@ -188,7 +188,7 @@ import os as _os
 try:
     import torch as _torch
     DEVICE = _os.environ.get("PIPELINE_DEVICE") or ("cuda" if _torch.cuda.is_available() else "cpu")
-except ImportError:
+except Exception:  # ImportError, or OSError from Windows DLL init when torch loads after numpy
     DEVICE = _os.environ.get("PIPELINE_DEVICE", "cpu")
 
 # Layer widths shared by both architectures (per manuscript tables).
@@ -202,7 +202,7 @@ SIAMESE_ORDERED_HEAD_DIMS = [128, 32, 1]   # concat[h_u, h_v] (order-aware) -> s
 # ---------------------------------------------------------------------------
 HIGH_DIVERGENCE_PERCENTILE = 95    # high-divergence pairs threshold (Euclidean distortion)
 THORUP_ZWICK_K = [2, 3]            # (2k-1) stretch reference points: 3 and 5
-BOOTSTRAP_RESAMPLES = 1000
+BOOTSTRAP_RESAMPLES = 10000
 COHENS_D_THRESHOLD = 0.5           # substantive effect size for ablation comparisons
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ def speed_mps(road_class: str) -> float:
 
 
 def ablation_runs():
-    """Yield every (weight_condition, architecture, seed) cell of the 3x2x3 design."""
+    """Yield every (weight_condition, architecture, seed) cell of the 3x3x3 design (A, B, C)."""
     for weight in WEIGHT_CONDITIONS:
         for arch in ARCHITECTURES:
             for seed in SEEDS:
