@@ -1,0 +1,18 @@
+step,value
+Test row,28680
+Source node u (OSM id / embedding index),24740 / 8223
+Target node v (OSM id / embedding index),24368 / 26688
+"u lon, lat","121.07398, 14.63617"
+"v lon, lat","121.08631, 14.69520"
+"Great-circle (Euclidean baseline) distance, m","6,696.1"
+"Shortest path: edges / length, km",160 / 9.57
+"Exact W3 cost d*(u,v) (label)","1,420.62"
+Recomputed Dijkstra W3 cost (check),"1,420.62"
+"Exact W3 cost d*(v,u)","1,350.19"
+z_u first 5 of 128 dims,[ 0.603  0.233 -0.268 -0.234  0.567]
+z_v first 5 of 128 dims,[ 0.235  0.485  0.246  0.239 -0.356]
+"Oracle C-W3-seed0 prediction d^(u,v)","1,432.92"
+"Oracle C-W3-seed0 prediction d^(v,u)","1,327.94"
+"Absolute error |d^(u,v) - d*(u,v)|",12.30
+"Relative error, %",0.87
+Multiplicative distortion,1.0087

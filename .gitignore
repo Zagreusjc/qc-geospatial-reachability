@@ -15,17 +15,11 @@ data/processed/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 
-# Pipeline outputs (regenerable)
+# Pipeline outputs (regenerable, large) -- figures, tables and maps are committed
 outputs/models/*
 outputs/embeddings/*
-outputs/figures/*
-outputs/tables/*
-outputs/maps/*
 !outputs/models/.gitkeep
 !outputs/embeddings/.gitkeep
-!outputs/figures/.gitkeep
-!outputs/tables/.gitkeep
-!outputs/maps/.gitkeep
 
 # Common geo/data file types (in case they land outside data/)
 *.gpkg
