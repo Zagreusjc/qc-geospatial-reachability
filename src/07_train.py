@@ -1,4 +1,4 @@
-"""Phase 7 -- Train the 3x2x3 ablation.
+"""Phase 7 -- Train the 3x3x3 ablation (3 weights x 3 architectures x 3 seeds).
 
 Trains every cell of the ablation grid: {W1,W2,W3} x {Siamese, MLP, Siamese-ordered}
 x {seed 0,1,2} = 27 runs (labelled A-W1-seed0 .. C-W3-seed2 via config.run_id).
@@ -13,7 +13,7 @@ Next    : 08_evaluate.py
 
 CLI examples:
   python src/07_train.py                       # all 27 runs
-  python src/07_train.py --condition W3         # only W3 cells (6 runs)
+  python src/07_train.py --condition W3         # only W3 cells (9 runs)
   python src/07_train.py --arch siamese --seed 0
 """
 from __future__ import annotations
@@ -62,17 +62,32 @@ def _batches(n: int, batch_size: int, generator: torch.Generator, device: str):
 
 
 def _train_one_run(weight: str, arch: str, seed: int) -> dict:
+    """Train one ablation cell and save its best checkpoint; return the checkpoint dict.
+
+    Takes the weight condition, architecture name (siamese, mlp or
+    siamese_ordered) and seed. Loads outputs/embeddings/Z_{weight}.npy and the
+    train/val pair tables for that condition, standardises labels with the
+    training mean and std, trains with Adam, cosine annealing and MSE loss, and
+    keeps the weights with the lowest validation MAE (raw units), stopping
+    early after config.EARLY_STOPPING_PATIENCE epochs without improvement.
+    Writes outputs/models/{run_id}.pt (state dict on CPU plus arch, condition,
+    seed, mu, sigma, best_val_mae and n_epochs_trained) and a training-curve
+    figure via _plot_training_curve.
+    """
+    # Seed all RNGs for this run.
     run_id = config.run_id(weight, arch, seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     device = config.DEVICE
 
+    # Load the embeddings for this condition and put them on the device.
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
     Z_t = torch.from_numpy(Z).to(device)
 
     train_df = _load_pairs(weight, "train")
     val_df = _load_pairs(weight, "val")
 
+    # Label standardisation: z-score using training-set statistics only (stored in the checkpoint).
     mu = float(train_df["dist"].mean())
     sigma = float(train_df["dist"].std())
     sigma = sigma if sigma > 1e-8 else 1.0
@@ -87,6 +102,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     train_u, train_v, train_y_std, _ = to_tensors(train_df)
     val_u, val_v, val_y_std, val_y_raw = to_tensors(val_df)
 
+    # Model, optimiser, cosine schedule, loss and the generator that fixes batch order.
     model = models_mod.build_model(arch).to(device)
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
@@ -98,6 +114,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
     epochs_without_improvement = 0
     history = []
 
+    # Epoch loop: train on shuffled mini-batches, then step the LR schedule.
     n_train = len(train_df)
     for epoch in range(config.EPOCHS):
         model.train()
@@ -118,6 +135,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
             n_batches += 1
         scheduler.step()
 
+        # Validation: un-standardise predictions and compute MAE in raw distance units.
         model.eval()
         with torch.no_grad():
             val_pred_std = model(Z_t[val_u], Z_t[val_v])
@@ -126,6 +144,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
         history.append({"epoch": epoch, "train_loss": epoch_loss / max(n_batches, 1), "val_mae": val_mae})
 
+        # Keep the best weights; stop after PATIENCE epochs without improvement.
         if val_mae < best_val_mae - 1e-6:
             best_val_mae = val_mae
             # Saved on CPU regardless of training device, so any machine can load it.
@@ -137,6 +156,7 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
                 log.info("%s: early stopping at epoch %d (best val MAE=%.4f)", run_id, epoch, best_val_mae)
                 break
 
+    # Restore the best weights and save the checkpoint with the metadata needed to invert standardisation.
     model.load_state_dict(best_state)
     checkpoint = {
         "state_dict": best_state,
@@ -157,6 +177,12 @@ def _train_one_run(weight: str, arch: str, seed: int) -> dict:
 
 
 def _plot_training_curve(run_id: str, history: list) -> None:
+    """Save a per-epoch training curve for one run to config.FIGURES_DIR.
+
+    history is a list of dicts with epoch, train_loss and val_mae. Plots train
+    MSE (standardised) on the left axis and validation MAE (raw units) on the
+    right axis, written as {run_id}_training_curve.png.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -178,6 +204,14 @@ def _plot_training_curve(run_id: str, history: list) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 7: train every selected cell of the ablation grid in turn.
+
+    Steps: (1) select runs from config.ablation_runs() filtered by --condition,
+    --arch and --seed, and log the selection; (2) for each run, call
+    _train_one_run, which reads outputs/embeddings/Z_{weight}.npy and
+    data/processed/pairs_{train,val}_{weight}.parquet and writes
+    outputs/models/{run_id}.pt plus a training-curve figure in config.FIGURES_DIR.
+    """
     config.ensure_dirs()
     runs = list(selected_runs(args))
     log.info("Selected %d ablation run(s):", len(runs))
@@ -186,6 +220,7 @@ def main(args: argparse.Namespace) -> None:
                  config.run_id(weight, arch, seed), weight,
                  config.WEIGHT_CONDITION_LABELS[weight], arch, seed)
 
+    # Train the selected runs sequentially.
     for weight, arch, seed in runs:
         run_id = config.run_id(weight, arch, seed)
         log.info(">>> Now training %s -- weight condition %s: %s",

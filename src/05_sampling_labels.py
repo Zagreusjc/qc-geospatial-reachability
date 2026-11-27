@@ -4,7 +4,7 @@ Builds the train/val/test node-pair sets and their exact friction-weighted
 shortest-path distances (the supervised regression targets).
 
 Procedure:
-  - pilot 10k random pairs -> Dijkstra -> 10 equal-width [equal-count] distance deciles
+  - pilot 10k random pairs -> Dijkstra -> 10 equal-count (quantile) distance deciles
   - train (500k) + val (50k): stratified across deciles (disjoint)
   - test (50k): uniform random (natural distance skew)
   - labels: networkx single_source_dijkstra_path_length per weight condition
@@ -40,6 +40,12 @@ log = get_logger("05_sampling_labels")
 
 
 def _annotate_condition_weight(G: nx.MultiDiGraph, weights_df: pd.DataFrame, condition: str) -> None:
+    """Set the edge attribute "w" on every edge of G to the given condition's weight.
+
+    Weights are looked up in weights_df by (u, v, key) from the column named
+    after the condition (W1, W2 or W3). Modifies G in place and returns None;
+    Dijkstra later reads this attribute via weight="w".
+    """
     lookup = {
         (int(r.u), int(r.v), int(r.key)): float(getattr(r, condition))
         for r in weights_df.itertuples()
@@ -79,6 +85,7 @@ def _pilot_deciles(G: nx.MultiDiGraph, nodes: list, rng: random.Random) -> np.nd
 
 
 def _decile_bucket(d: float, cutoffs: np.ndarray) -> int:
+    """Return the index of the decile bucket that distance d falls into, given the pilot cutoffs."""
     return int(np.searchsorted(cutoffs, d))
 
 
@@ -119,6 +126,7 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
     Fix 2: caller must pass the same pool keys across conditions so the same (u,v)
            pairs appear in every condition's test set (label them separately per condition).
     """
+    # Shuffle the whole pool so every slice below is a random sample.
     all_pairs = list(pool.items())
     rng.shuffle(all_pairs)
 
@@ -128,12 +136,14 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
     remaining = all_pairs[n_test:]
 
     # Stratify train/val from what remains
+    # Group the remaining pairs by distance decile and shuffle within each decile.
     buckets: dict = {i: [] for i in range(config.N_DECILES)}
     for (u, v), d in remaining:
         buckets[_decile_bucket(d, cutoffs)].append((u, v, d))
     for b in buckets.values():
         rng.shuffle(b)
 
+    # Equal per-decile quotas for train and val; train takes its share first, val the next slice.
     n_train_per_bucket = config.N_TRAIN // config.N_DECILES
     n_val_per_bucket = config.N_VAL // config.N_DECILES
 
@@ -149,6 +159,7 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
         train_rows.extend(items[:n_train_here])
         val_rows.extend(items[n_train_here:n_train_here + n_val_here])
 
+    # Flatten the test items to (u, v, d) rows like the other splits.
     test_rows = [(u, v, d) for (u, v), d in test_items]
 
     log.info(
@@ -159,6 +170,11 @@ def _stratified_split(pool: dict, cutoffs: np.ndarray, rng: random.Random) -> di
 
 
 def _write_split(rows: list, node_to_idx: dict, out_path) -> None:
+    """Write (u, v, dist) rows to a parquet file with graph node ids mapped to embedding row indices.
+
+    node_to_idx maps node id -> row index (from node_index.parquet). The
+    output keeps only the columns u_idx, v_idx and dist.
+    """
     df = pd.DataFrame(rows, columns=["u", "v", "dist"])
     df["u_idx"] = df["u"].map(node_to_idx)
     df["v_idx"] = df["v"].map(node_to_idx)
@@ -167,11 +183,23 @@ def _write_split(rows: list, node_to_idx: dict, out_path) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 5: sample node pairs and label them with Dijkstra distances per condition.
+
+    Steps: (1) load data/processed/G_scc.gpickle, friction_weights.parquet and
+    node_index.parquet (FileNotFoundError if any is missing); (2) for each
+    condition (all of config.WEIGHT_CONDITIONS, or --condition), with an RNG
+    seeded by config.SAMPLING_SEED: annotate edge weights, estimate decile
+    cutoffs from a pilot sample, collect a pool of deduplicated directed
+    (source, target, distance) pairs, and split it into test, train and val;
+    (3) write data/processed/pairs_{train,val,test}_{condition}.parquet with
+    columns u_idx, v_idx and dist.
+    """
     config.ensure_dirs()
     log.info("Sampling train=%d val=%d test=%d (deciles=%d, pilot=%d)",
              config.N_TRAIN, config.N_VAL, config.N_TEST,
              config.N_DECILES, config.PILOT_PAIRS)
 
+    # Check that all earlier-phase inputs exist before doing any work.
     g_path = config.PROCESSED_DIR / "G_scc.gpickle"
     weights_path = config.PROCESSED_DIR / "friction_weights.parquet"
     node_index_path = config.PROCESSED_DIR / "node_index.parquet"
@@ -179,6 +207,7 @@ def main(args: argparse.Namespace) -> None:
         if not p.exists():
             raise FileNotFoundError(f"{p} not found; run the earlier phases first.")
 
+    # Load the graph, per-condition weights and the node-id -> embedding-row map.
     with timed(log, "load graph + weights + node index"):
         with open(g_path, "rb") as f:
             G: nx.MultiDiGraph = pickle.load(f)
@@ -192,6 +221,7 @@ def main(args: argparse.Namespace) -> None:
     # representation and still leave enough leftover for the uniform-random test draw.
     target_pool_size = int((config.N_TRAIN + config.N_VAL + config.N_TEST) * 1.8)
 
+    # Per-condition pipeline: weights -> pilot cutoffs -> pair pool -> split -> parquet.
     for condition in conditions:
         rng = random.Random(config.SAMPLING_SEED)
         log.info("=== Condition %s ===", condition)

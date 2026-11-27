@@ -1,9 +1,15 @@
 """Phase 6 -- Oracle architectures (importable module, not a run step).
 
-Defines the two neural architectures compared in the ablation:
+Defines the three neural architectures trained in the ablation (letters below
+are the CODE letters, which are also the run-id prefixes, e.g. "C-W3-seed0").
 
-  Architecture A -- Siamese: shared twin branch FC(128->256->128->64) with
-    LayerNorm + ReLU; combine by absolute element-wise difference |z_u - z_v|;
+  Letter map. The thesis calls the order-aware Siamese "Architecture A", the
+  MLP "Architecture B", and reports the symmetric Siamese only in Appendix A.
+  In the code the symmetric Siamese is A, the MLP is B, and the order-aware
+  Siamese (the thesis's headline model) is C.
+
+  Architecture A -- Siamese (symmetric; the thesis's Appendix A variant): shared
+    twin branch FC(128->256->128->64) with LayerNorm + ReLU; combine by absolute element-wise difference |z_u - z_v|;
     prediction head FC(64->32->1). Weight sharing makes the output symmetric by
     construction. LayerNorm normalizes per-sample rather than per-batch, so
     there is no running-statistic mismatch between training and evaluation.
@@ -46,6 +52,14 @@ class SiameseOracle(nn.Module):
     """Twin shared-weight branch + |z_u - z_v| comparison head."""
 
     def __init__(self, branch_dims=None, head_dims=None):
+        """Build the shared branch and the comparison head (code architecture A).
+
+        branch_dims and head_dims are layer-width lists; they default to
+        config.SIAMESE_BRANCH_DIMS and config.SIAMESE_HEAD_DIMS. Each branch
+        layer is Linear + LayerNorm + ReLU. The head is Linear layers with ReLU
+        between them and none after the last, so it ends in a plain linear
+        output.
+        """
         super().__init__()
         branch_dims = branch_dims or config.SIAMESE_BRANCH_DIMS
         head_dims = head_dims or config.SIAMESE_HEAD_DIMS
@@ -80,6 +94,11 @@ class MLPOracle(nn.Module):
     """
 
     def __init__(self, dims=None):
+        """Build the MLP (code architecture B) from a list of layer widths.
+
+        dims defaults to config.MLP_DIMS. Every layer except the last is
+        Linear + LayerNorm + ReLU; the last is a plain Linear layer.
+        """
         super().__init__()
         dims = dims or config.MLP_DIMS  # dims[0] == 2 * N2V_DIM (concatenated input)
         layers = []
@@ -99,6 +118,14 @@ class SiameseOrderedOracle(nn.Module):
     """Twin shared-weight branch + concat([h_u, h_v]) order-aware comparison head."""
 
     def __init__(self, branch_dims=None, head_dims=None):
+        """Build the shared branch and the order-aware head (code architecture C).
+
+        The branch is the same as in SiameseOracle (default
+        config.SIAMESE_BRANCH_DIMS); the head defaults to
+        config.SIAMESE_ORDERED_HEAD_DIMS, whose first width must match the
+        concatenated [h_u; h_v] input. Head layers use ReLU between them and
+        none after the last.
+        """
         super().__init__()
         branch_dims = branch_dims or config.SIAMESE_BRANCH_DIMS
         head_dims = head_dims or config.SIAMESE_ORDERED_HEAD_DIMS
