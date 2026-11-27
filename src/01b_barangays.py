@@ -69,12 +69,14 @@ def _find_adm4_layer(gdb_path) -> str:
 def _filter_to_quezon_city(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Filter the national ADM4 layer down to Quezon City's barangays.
 
-    Prefers an ADM3 PSGC code match (robust to name spelling/casing); falls back
-    to a case/whitespace-insensitive match on the ADM3 name column.
+    Matches config.ADM3_FILTER_NAME against the ADM3 name column, ignoring case
+    and surrounding whitespace. If the layer has an ADM3 PSGC code column, the
+    matched code(s) are only logged for checking; they are not used to filter.
     """
     cols = list(gdf.columns)
     log.info("ADM4 layer columns: %s", cols)
 
+    # Find the ADM3 name column (and a PSGC code column, used only for logging).
     name_col = next((c for c in cols if c.upper() in ("ADM3_EN", "ADM3_NAME", "NAME_3")), None)
     pcode_col = next((c for c in cols if "PCODE" in c.upper() and "ADM3" in c.upper()), None)
 
@@ -84,6 +86,7 @@ def _filter_to_quezon_city(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "inspect the layer manually and update _filter_to_quezon_city()."
         )
 
+    # Match config.ADM3_FILTER_NAME ignoring case and surrounding whitespace.
     target = config.ADM3_FILTER_NAME.strip().casefold()
     mask = gdf[name_col].astype(str).str.strip().str.casefold() == target
     filtered = gdf[mask].copy()
@@ -96,6 +99,7 @@ def _filter_to_quezon_city(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         pcodes = filtered[pcode_col].unique().tolist()
         log.info("Matching ADM3 PSGC code(s) via column %r: %s", pcode_col, pcodes)
 
+    # Fail loudly if nothing matched.
     if filtered.empty:
         sample = sorted(gdf[name_col].astype(str).unique())[:10]
         raise RuntimeError(
@@ -106,6 +110,12 @@ def _filter_to_quezon_city(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 def _validate_and_clean(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Sanity-check the filtered barangays and repair invalid geometries.
+
+    Takes the Quezon City GeoDataFrame and returns it. Logs a warning, but does
+    not raise, if the row count differs from config.N_BARANGAYS. Any invalid
+    geometries are replaced in place with their make_valid() result.
+    """
     n = len(gdf)
     if n != config.N_BARANGAYS:
         log.warning(
@@ -125,14 +135,25 @@ def _validate_and_clean(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 1b: resolve Quezon City barangay polygons and cache them.
+
+    Steps in order: reject any --source other than hdx_cod_ab_adm4; read the ADM4
+    layer of the geodatabase at config.ADMIN_GDB_RAW (error if missing); filter
+    to Quezon City and validate; reproject to WGS84 and UTM 51N and dissolve the
+    barangays into one boundary polygon (computed in UTM, then converted to
+    WGS84); write data/processed/qc_barangays.gpkg with layers "barangays" and
+    "qc_boundary"; mark the source as used in data/DATA_MANIFEST.md.
+    """
     config.ensure_dirs()
 
+    # Only the first ladder source is implemented.
     if args.source and args.source != "hdx_cod_ab_adm4":
         raise NotImplementedError(
             f"Ladder source {args.source!r} is documented but not yet implemented; "
             "only 'hdx_cod_ab_adm4' is currently implemented."
         )
 
+    # The geodatabase must already be extracted (Phase 0 only verifies it).
     gdb_path = config.ADMIN_GDB_RAW
     if not gdb_path.exists():
         raise FileNotFoundError(
@@ -140,15 +161,18 @@ def main(args: argparse.Namespace) -> None:
             "extract phl_admin_boundaries.gdb.zip there first."
         )
 
+    # Read the national ADM4 layer.
     with timed(log, "read ADM4 layer"):
         layer = _find_adm4_layer(gdb_path)
         gdf = gpd.read_file(gdb_path, layer=layer, engine="pyogrio")
         log.info("Loaded %d total ADM4 features nationwide, CRS=%s", len(gdf), gdf.crs)
 
+    # Keep only Quezon City rows and check count and geometry validity.
     with timed(log, "filter to Quezon City"):
         qc = _filter_to_quezon_city(gdf)
         qc = _validate_and_clean(qc)
 
+    # Dissolve in UTM 51N, then convert the single boundary back to WGS84.
     with timed(log, "reproject + dissolve"):
         qc_wgs84 = qc.to_crs(config.CRS_WGS84)
         qc_utm = qc.to_crs(config.CRS_UTM_51N)
@@ -157,11 +181,13 @@ def main(args: argparse.Namespace) -> None:
         )
         qc_boundary_wgs84 = qc_boundary_utm.to_crs(config.CRS_WGS84)
 
+    # Write both layers to the canonical GeoPackage read by downstream steps.
     out_path = config.PROCESSED_DIR / "qc_barangays.gpkg"
     with timed(log, f"write {out_path}"):
         qc_wgs84.to_file(out_path, layer="barangays", driver="GPKG")
         qc_boundary_wgs84.to_file(out_path, layer="qc_boundary", driver="GPKG")
 
+    # Record the source and barangay count in the data manifest.
     manifest_path = config.DATA_DIR / "DATA_MANIFEST.md"
     mark_barangay_source_used(manifest_path, "HDX COD-AB ADM4", len(qc_wgs84))
 

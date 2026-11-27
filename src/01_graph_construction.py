@@ -48,6 +48,13 @@ _ROADS_DATA_EXTS = (".gpkg", ".geojson", ".json", ".shp", ".osm", ".xml", ".pbf"
 
 
 def _find_roads_file():
+    """Return the path of the HOTOSM roads file under config.RAW_DIR.
+
+    Takes no arguments. Candidates are files named hotosm_phl_roads* with a
+    recognised data extension, sorted by name; names containing "polygon" are
+    dropped when any other candidate exists. Warns if several remain and returns
+    the first. Raises FileNotFoundError if none is found.
+    """
     candidates = sorted(
         p for p in config.RAW_DIR.glob("hotosm_phl_roads*")
         if p.suffix.lower() in _ROADS_DATA_EXTS
@@ -88,12 +95,14 @@ def _read_and_classify_lines(path, boundary) -> tuple[gpd.GeoDataFrame, dict]:
     mask = gpd.GeoSeries([boundary], crs=config.CRS_WGS84)
     lines = gpd.read_file(path, mask=mask)
     log.info("Loaded %d road features after spatial pre-filter", len(lines))
+    # Make sure the geometries are in WGS84.
     if lines.crs is None:
         log.warning("Roads file has no CRS declared; assuming %s", config.CRS_WGS84)
         lines = lines.set_crs(config.CRS_WGS84)
     else:
         lines = lines.to_crs(config.CRS_WGS84)
 
+    # Standardize column names: 'highway' is required, 'oneway' is added if absent.
     highway_col = next((c for c in lines.columns if c.lower() == "highway"), None)
     if highway_col is None:
         raise RuntimeError(f"No 'highway' column found among {list(lines.columns)}")
@@ -105,16 +114,19 @@ def _read_and_classify_lines(path, boundary) -> tuple[gpd.GeoDataFrame, dict]:
     elif oneway_col != "oneway":
         lines = lines.rename(columns={oneway_col: "oneway"})
 
+    # Default missing or blank highway tags (counted for the stats).
     missing = lines["highway"].isna() | (lines["highway"].astype(str).str.strip() == "")
     n_defaulted = int(missing.sum())
     lines.loc[missing, "highway"] = config.DEFAULT_ROAD_CLASS
 
+    # Drop road classes outside config.HIGHWAY_WHITELIST, counting what is removed.
     whitelist = set(config.HIGHWAY_WHITELIST)
     class_counts = lines["highway"].value_counts().to_dict()
     n_total = len(lines)
     lines = lines[lines["highway"].isin(whitelist)].copy().reset_index(drop=True)
     n_removed = n_total - len(lines)
 
+    # Summarize the filtering for graph_stats.json.
     stats = {
         "n_edges_removed_non_whitelisted": n_removed,
         "n_edges_defaulted_road_class": n_defaulted,
@@ -142,19 +154,23 @@ def _node_line_network(lines: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     line at the subset of junction points that lie on its interior.
     """
     log.info("Noding network topology (%d input features)...", len(lines))
+    # Node the whole line set at once to discover every intersection point.
     geoms = list(lines.geometry.values)
     noded = unary_union(geoms)
     pieces = [noded] if noded.geom_type == "LineString" else list(noded.geoms)
 
+    # The endpoints of the noded pieces are the junction points.
     junction_pts = set()
     for piece in pieces:
         coords = list(piece.coords)
         junction_pts.add(coords[0])
         junction_pts.add(coords[-1])
 
+    # Spatial index over the junction points for fast lookup per line.
     jp_geoms = [Point(p) for p in junction_pts]
     tree = STRtree(jp_geoms)
 
+    # Split each original line at junctions lying in its interior, keeping its attributes.
     out_rows = []
     n_split = 0
     for _, row in lines.iterrows():
@@ -178,6 +194,7 @@ def _node_line_network(lines: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             new_row.geometry = sub
             out_rows.append(new_row)
 
+    # Rebuild a GeoDataFrame from the (possibly split) rows.
     noded_gdf = gpd.GeoDataFrame(out_rows, crs=lines.crs).reset_index(drop=True)
     log.info(
         "Noding split %d/%d original lines into %d total segments (%d junction points found)",
@@ -192,9 +209,11 @@ def _build_graph_from_line_gdf(path, boundary) -> tuple[nx.MultiDiGraph, dict]:
     T-junctions, then builds the graph from exact-endpoint topology (now valid
     since every true junction is guaranteed to be a segment endpoint).
     """
+    # Read, whitelist-filter and node the lines before building any topology.
     lines, stats = _read_and_classify_lines(path, boundary)
     lines = _node_line_network(lines)
 
+    # Integer node ids are assigned to unique segment-endpoint coordinates.
     node_id_of: dict = {}
     node_coords: list = []
     n_reverse_only = 0
@@ -205,8 +224,10 @@ def _build_graph_from_line_gdf(path, boundary) -> tuple[nx.MultiDiGraph, dict]:
             node_coords.append(pt)
         return node_id_of[pt]
 
+    # UTM 51N is used only to measure each segment's length in metres.
     lines_utm = lines.to_crs(config.CRS_UTM_51N)
 
+    # Add one directed edge per legal travel direction, following the oneway tag.
     G = nx.MultiDiGraph(crs=config.CRS_WGS84)
     for (_, row), length_m in zip(lines.iterrows(), lines_utm.geometry.length):
         geom = row.geometry
@@ -229,6 +250,7 @@ def _build_graph_from_line_gdf(path, boundary) -> tuple[nx.MultiDiGraph, dict]:
             if not oneway:
                 G.add_edge(v, u, **{**attrs, "geometry": geom.reverse()})
 
+    # Attach the endpoint coordinates to the nodes as x/y attributes.
     for nid, (x, y) in enumerate(node_coords):
         G.add_node(nid, x=x, y=y)
 
@@ -251,10 +273,19 @@ def _build_raw_graph(roads_path, boundary) -> tuple[nx.MultiDiGraph, dict | None
 
 
 def _filter_highway_whitelist(G: nx.MultiDiGraph) -> tuple[nx.MultiDiGraph, dict]:
+    """Keep only whitelisted road classes on an already-built graph, in place.
+
+    Takes the graph and returns (G, stats). A list-valued highway tag is reduced
+    to its first element; a missing tag is set to config.DEFAULT_ROAD_CLASS and
+    counted. Edges whose class is not in config.HIGHWAY_WHITELIST are removed,
+    then isolated nodes. stats holds the same keys as _read_and_classify_lines
+    returns. Used on the OSM XML path, where no GeoDataFrame-level filter ran.
+    """
     whitelist = set(config.HIGHWAY_WHITELIST)
     to_remove = []
     n_defaulted = 0
     class_counts: dict[str, int] = {}
+    # Default missing tags and flag edges whose class is not whitelisted.
     for u, v, k, data in G.edges(keys=True, data=True):
         hw = data.get("highway")
         if isinstance(hw, list):
@@ -267,6 +298,7 @@ def _filter_highway_whitelist(G: nx.MultiDiGraph) -> tuple[nx.MultiDiGraph, dict
             to_remove.append((u, v, k))
         else:
             class_counts[hw] = class_counts.get(hw, 0) + 1
+    # Remove the flagged edges, then any nodes left without edges.
     G.remove_edges_from(to_remove)
     G.remove_nodes_from(list(nx.isolates(G)))
     stats = {
@@ -313,6 +345,15 @@ def _largest_scc_with_exclusions(G: nx.MultiDiGraph):
 
 
 def _excluded_barangay_distribution(G: nx.MultiDiGraph, excluded: set, barangays_path) -> dict:
+    """Count which barangays the SCC-excluded nodes fall in.
+
+    Takes a graph whose nodes carry WGS84 x/y attributes, the set of excluded
+    node ids, and the path of data/processed/qc_barangays.gpkg. Returns {} if
+    there are no excluded nodes or the file is missing. Otherwise spatially joins
+    the node points to the "barangays" layer (predicate "within") and returns a
+    dict of barangay name -> node count (unmatched nodes are counted under NaN),
+    or a {"_note": ...} dict if no ADM4 name column is found.
+    """
     if not excluded or not barangays_path.exists():
         return {}
     pts = gpd.GeoDataFrame(
@@ -331,21 +372,36 @@ def _excluded_barangay_distribution(G: nx.MultiDiGraph, excluded: set, barangays
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 1: build, clean and reduce the road graph to its largest SCC.
+
+    Steps in order: read the Quezon City boundary from the "qc_boundary" layer of
+    data/processed/qc_barangays.gpkg (error if the file is missing); build the raw
+    graph from the data/raw/hotosm_phl_roads* file; truncate it to the boundary;
+    apply the highway whitelist (OSM XML path only); project to UTM 51N, keeping a
+    WGS84 copy; simplify, flatten list attributes and dedupe parallel edges and
+    self-loops; keep the largest strongly connected component; tally the
+    barangays of the excluded nodes. Writes data/processed/G_scc.gpickle,
+    nodes_scc.parquet, edges_scc.parquet and graph_stats.json.
+    """
     config.ensure_dirs()
     log.info("Study area: %s", config.PLACE_NAME)
     log.info("Highway whitelist: %s", ", ".join(config.HIGHWAY_WHITELIST))
 
+    # Phase 1b output is required: it supplies the clipping boundary.
     barangays_path = config.PROCESSED_DIR / "qc_barangays.gpkg"
     if not barangays_path.exists():
         raise FileNotFoundError(f"{barangays_path} not found; run 01b_barangays.py first.")
 
+    # Locate the roads file and load the single QC boundary polygon.
     roads_path = _find_roads_file()
     boundary = gpd.read_file(barangays_path, layer="qc_boundary").geometry.iloc[0]
 
+    # Build the raw directed multigraph from the roads file.
     with timed(log, "build raw graph"):
         G, class_stats = _build_raw_graph(roads_path, boundary=boundary)
         log.info("Raw graph: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
 
+    # Clip to the QC polygon, keeping edges that touch it.
     with timed(log, "truncate to Quezon City boundary"):
         G = ox.truncate.truncate_graph_polygon(G, boundary, truncate_by_edge=True)
         log.info("Truncated graph: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
@@ -358,10 +414,12 @@ def main(args: argparse.Namespace) -> None:
             log.info("After whitelist filter: %d nodes, %d edges (%.2f%% edges defaulted)",
                      G.number_of_nodes(), G.number_of_edges(), class_stats["pct_edges_defaulted"])
 
+    # Keep a WGS84 copy for the later barangay join, and project the working graph.
     with timed(log, "project to UTM 51N"):
         G_wgs84 = G.copy()
         G = ox.project_graph(G, to_crs=config.CRS_UTM_51N)
 
+    # Merge degree-2 chains, collapse list attributes, drop self-loops and parallel edges.
     with timed(log, "simplify + dedupe"):
         if not G.graph.get("simplified"):
             G = ox.simplify_graph(G)
@@ -369,18 +427,21 @@ def main(args: argparse.Namespace) -> None:
         G = _dedupe_parallel_and_self_loops(G)
         log.info("After simplify/dedupe: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
 
+    # Keep only the largest strongly connected component so every node can reach every other.
     with timed(log, "largest SCC extraction"):
         G_scc, excluded = _largest_scc_with_exclusions(G)
         pct_excluded = round(100 * len(excluded) / max(G.number_of_nodes(), 1), 3)
         log.info("Largest SCC: %d/%d nodes kept (%d excluded, %.2f%%)",
                  G_scc.number_of_nodes(), G.number_of_nodes(), len(excluded), pct_excluded)
 
+    # Report which barangays lost nodes to the SCC step, using WGS84 coordinates.
     with timed(log, "excluded-node barangay distribution"):
         G_wgs84_for_join = G_wgs84.subgraph(
             [n for n in excluded if n in G_wgs84.nodes]
         )
         barangay_dist = _excluded_barangay_distribution(G_wgs84_for_join, set(G_wgs84_for_join.nodes), barangays_path)
 
+    # Save the study graph and its node/edge tables.
     out_gpickle = config.PROCESSED_DIR / "G_scc.gpickle"
     with timed(log, f"write {out_gpickle}"):
         with open(out_gpickle, "wb") as f:
@@ -391,6 +452,7 @@ def main(args: argparse.Namespace) -> None:
         nodes_gdf.to_parquet(config.PROCESSED_DIR / "nodes_scc.parquet")
         edges_gdf.to_parquet(config.PROCESSED_DIR / "edges_scc.parquet")
 
+    # Write the graph statistics, including the class stats from the filtering step.
     stats = {
         "n_nodes_scc": G_scc.number_of_nodes(),
         "n_edges_scc": G_scc.number_of_edges(),

@@ -39,6 +39,13 @@ ADMIN_METADATA_JSON = config.RAW_DIR / "metadata-phl_admin_boundaries-gdb-zip.js
 
 
 def _verify_admin_boundaries() -> None:
+    """Check that the extracted admin-boundaries geodatabase exists and log it.
+
+    Takes no arguments and returns nothing. If config.ADMIN_GDB_RAW is missing,
+    logs an error with download instructions and stops. Otherwise it updates the
+    "COD-AB" row of data/DATA_MANIFEST.md, using the "created" date and "size"
+    from the HDX metadata JSON when that file exists and today's UTC date if not.
+    """
     if not config.ADMIN_GDB_RAW.exists():
         log.error(
             "Admin boundaries not found at %s. Download the COD-AB Philippines "
@@ -48,6 +55,7 @@ def _verify_admin_boundaries() -> None:
         )
         return
 
+    # Default to today's date; overridden below by the HDX metadata if present.
     retrieved = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     version_notes = "COD-AB PHL geodatabase (ADM0-ADM4), NAMRIA geometry / PSA PSGC codes"
     if ADMIN_METADATA_JSON.exists():
@@ -64,10 +72,21 @@ def _verify_admin_boundaries() -> None:
         log.info("Admin boundaries verified at %s (no metadata JSON found alongside it)",
                   config.ADMIN_GDB_RAW)
 
+    # Record the retrieval date and version notes in the data manifest.
     update_manifest_row(MANIFEST_PATH, "COD-AB", retrieved, version_notes)
 
 
 def _download_roads(url: str | None, force: bool) -> None:
+    """Download the HOTOSM Philippines roads file into data/raw/ unless cached.
+
+    Takes the direct resource URL (or None) and a force flag. If a
+    hotosm_phl_roads* file with a known extension is already present and force is
+    False, only its manifest row is refreshed (date from the file modification
+    time). With no file and no URL it logs a warning and returns. Otherwise it
+    streams the URL to disk, rejects files under 1024 bytes, and records the
+    download in data/DATA_MANIFEST.md.
+    """
+    # Reuse a cached roads file when one exists, unless --force was given.
     dest = config.RAW_DIR / "hotosm_phl_roads.geojson"
     existing = [
         p for p in config.RAW_DIR.glob("hotosm_phl_roads*")
@@ -79,6 +98,7 @@ def _download_roads(url: str | None, force: bool) -> None:
         update_manifest_row(MANIFEST_PATH, "HOTOSM Philippines Roads", retrieved, existing[0].name)
         return
 
+    # Nothing cached and no URL: tell the user how to obtain one.
     if not url:
         log.warning(
             "No HOTOSM roads file present and no --roads-url given. Visit %s, "
@@ -88,6 +108,7 @@ def _download_roads(url: str | None, force: bool) -> None:
         )
         return
 
+    # Stream the download to disk; the response content type picks the file suffix.
     with timed(log, f"download HOTOSM roads from {url}"):
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
@@ -100,6 +121,7 @@ def _download_roads(url: str | None, force: bool) -> None:
                 for chunk in r.iter_content(chunk_size=1 << 20):
                     f.write(chunk)
 
+    # Sanity-check the saved file, then record it in the manifest.
     size_bytes = dest.stat().st_size
     if size_bytes < 1024:
         raise RuntimeError(f"Downloaded HOTOSM roads file is suspiciously small ({size_bytes}B)")
@@ -110,6 +132,15 @@ def _download_roads(url: str | None, force: bool) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 0: verify admin boundaries, then fetch or register the roads file.
+
+    Steps in order: create the project directories (config.ensure_dirs), verify
+    the COD-AB geodatabase at config.ADMIN_GDB_RAW, then download or register
+    the HOTOSM roads file using args.roads_url and args.force. Reads
+    data/raw/metadata-phl_admin_boundaries-gdb-zip.json when present; writes
+    data/raw/hotosm_phl_roads.* (only on a real download) and updates the rows
+    in data/DATA_MANIFEST.md.
+    """
     config.ensure_dirs()
     _verify_admin_boundaries()
     _download_roads(args.roads_url, args.force)
