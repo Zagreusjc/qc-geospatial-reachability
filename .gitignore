@@ -48,3 +48,18 @@ runs_archive/
 
 # Local-only notes (never pushed -- see the file itself for why)
 *.local.md
+
+# Exceptions: small processed data + trained models committed for reproducibility
+# (must stay at the end so they override data/processed/*, *.parquet, *.gpkg, *.pt above)
+!data/processed/qc_barangays.gpkg
+!data/processed/node_index.parquet
+!data/processed/high_divergence_pairs.parquet
+!data/processed/pairs_train_W*.parquet
+!data/processed/pairs_val_W*.parquet
+!data/processed/pairs_test_W*.parquet
+!data/processed/ebc.parquet
+!data/processed/nodes_scc.parquet
+!data/processed/edges_scc.parquet
+!data/processed/friction_weights.parquet
+!data/processed/graph_stats.json
+!outputs/models/*.pt
