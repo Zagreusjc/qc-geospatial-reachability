@@ -32,6 +32,13 @@ log = get_logger("04_embeddings")
 
 
 def _embed_condition(edg_path, p, q, seed) -> tuple[np.ndarray, list[int]]:
+    """Embed one weighted edgelist with Node2Vec+ and return (Z, node_ids).
+
+    Takes the .edg path, the walk parameters p and q, and a random seed. Reads
+    the edgelist as weighted and directed, runs PecanPy SparseOTF with the
+    config.N2V_* settings, and returns the embedding matrix together with the
+    graph node ids in matrix row order.
+    """
     g = SparseOTF(
         p=p, q=q, workers=config.N2V_WORKERS, extend=config.N2V_EXTEND,
         random_state=seed, verbose=False,
@@ -47,17 +54,30 @@ def _embed_condition(edg_path, p, q, seed) -> tuple[np.ndarray, list[int]]:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 4: embed each weight condition, then optionally sweep p/q on W3.
+
+    Steps: (1) for each condition (all of config.WEIGHT_CONDITIONS, or the one
+    given by --condition), read data/interim/edgelists/{condition}.edg and
+    embed it with config.N2V_P and config.N2V_Q; (2) save the matrix to
+    outputs/embeddings/Z_{condition}.npy; (3) write the node ordering of the
+    first condition processed to data/processed/node_index.parquet and warn if a
+    later condition yields a different ordering; (4) with --sweep, embed W3.edg
+    for every (p, q) in config.N2V_P_SWEEP x config.N2V_Q_SWEEP except the
+    primary pair, saving outputs/embeddings/Z_W3_p{p}_q{q}.npy.
+    """
     config.ensure_dirs()
     log.info("Node2Vec+ dim=%d L=%d r=%d p=%.2f q=%.2f window=%d extend=%s",
              config.N2V_DIM, config.N2V_WALK_LENGTH, config.N2V_NUM_WALKS,
              config.N2V_P, config.N2V_Q, config.N2V_WINDOW, config.N2V_EXTEND)
 
+    # Locate the Phase 3 edgelists and choose which conditions to embed.
     edgelist_dir = config.INTERIM_DIR / "edgelists"
     conditions = [args.condition] if args.condition else config.WEIGHT_CONDITIONS
 
     node_index_path = config.PROCESSED_DIR / "node_index.parquet"
     reference_node_ids = None
 
+    # Primary pass: one embedding per weight condition, using the primary p and q.
     for condition in conditions:
         edg_path = edgelist_dir / f"{condition}.edg"
         if not edg_path.exists():
@@ -71,6 +91,7 @@ def main(args: argparse.Namespace) -> None:
         np.save(out_path, Z)
         log.info("Wrote %s", out_path)
 
+        # The first condition defines node_index.parquet; later ones are only checked against it.
         if reference_node_ids is None:
             reference_node_ids = node_ids
             pd.DataFrame({"node_id": node_ids}).to_parquet(node_index_path)
@@ -83,6 +104,7 @@ def main(args: argparse.Namespace) -> None:
                 condition,
             )
 
+    # Optional sensitivity sweep: embeddings only, on the W3 edgelist.
     if args.sweep:
         log.info("Running p/q sensitivity sweep on W3 (embeddings only, %d combinations)",
                   len(config.N2V_P_SWEEP) * len(config.N2V_Q_SWEEP))

@@ -30,9 +30,20 @@ log = get_logger("03_friction_weights")
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 3: build the W1/W2/W3 edge weights and PecanPy edge lists.
+
+    Steps in order: load data/processed/G_scc.gpickle and
+    data/processed/ebc.parquet (error if either is missing), compute W1, W2, W3
+    and the W3_alpha{a} variants for every edge, write
+    data/processed/friction_weights.parquet, write one tab-separated
+    data/interim/edgelists/{condition}.edg per condition in
+    config.WEIGHT_CONDITIONS, save outputs/figures/friction_weight_distributions.png,
+    and log per-condition summary statistics.
+    """
     config.ensure_dirs()
     log.info("Weight conditions: %s (alpha=%s)", config.WEIGHT_CONDITIONS, config.ALPHA)
 
+    # Both Phase 1 (graph) and Phase 2 (EBC) outputs must exist.
     g_path = config.PROCESSED_DIR / "G_scc.gpickle"
     ebc_path = config.PROCESSED_DIR / "ebc.parquet"
     if not g_path.exists():
@@ -40,6 +51,7 @@ def main(args: argparse.Namespace) -> None:
     if not ebc_path.exists():
         raise FileNotFoundError(f"{ebc_path} not found; run 02_ebc.py first.")
 
+    # Load inputs and index EBC by (u, v, key) for per-edge lookup.
     with timed(log, "load graph + EBC"):
         with open(g_path, "rb") as f:
             G: nx.MultiDiGraph = pickle.load(f)
@@ -49,6 +61,7 @@ def main(args: argparse.Namespace) -> None:
         }
         log.info("Loaded graph (%d edges) and EBC table (%d edges)", G.number_of_edges(), len(ebc_df))
 
+    # One row per edge: W1 from length and class speed, W2 from EBC, W3 = W1 scaled by EBC.
     with timed(log, "compute W1/W2/W3 + alpha-sensitivity variants"):
         rows = []
         n_missing_ebc = 0
@@ -76,10 +89,12 @@ def main(args: argparse.Namespace) -> None:
         if n_missing_ebc:
             log.warning("%d/%d edges had no EBC entry; defaulted ebc_norm=0.0", n_missing_ebc, len(weights_df))
 
+    # Save the full weight table (true values, including real zeros).
     out_path = config.PROCESSED_DIR / "friction_weights.parquet"
     weights_df.to_parquet(out_path)
     log.info("Wrote %s (%d edges)", out_path, len(weights_df))
 
+    # Write one headerless tab-separated edge list per condition for PecanPy.
     edgelist_dir = config.INTERIM_DIR / "edgelists"
     edgelist_dir.mkdir(parents=True, exist_ok=True)
     with timed(log, "write .edg edgelists for PecanPy"):
@@ -100,6 +115,7 @@ def main(args: argparse.Namespace) -> None:
             edg_df.to_csv(edg_path, sep="\t", header=False, index=False)
             log.info("Wrote %s (%d edges, %d floored to %g)", edg_path, len(edg_df), n_floored, edg_epsilon)
 
+    # Plot one histogram per condition side by side.
     with timed(log, "write weight-distribution figure"):
         import matplotlib
         matplotlib.use("Agg")
@@ -117,6 +133,7 @@ def main(args: argparse.Namespace) -> None:
         plt.close(fig)
         log.info("Wrote %s", fig_path)
 
+    # Log min/max/mean/median of each condition as a quick sanity check.
     for condition in config.WEIGHT_CONDITIONS:
         s = weights_df[condition]
         log.info("%s summary: min=%.6g max=%.6g mean=%.6g median=%.6g",

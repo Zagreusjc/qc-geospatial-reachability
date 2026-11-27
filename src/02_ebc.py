@@ -28,10 +28,20 @@ log = get_logger("02_ebc")
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 2: compute and normalize edge betweenness centrality.
+
+    Steps in order: load data/processed/G_scc.gpickle (error if missing), compute
+    unweighted edge betweenness (exact, or approximate with k pivots capped at
+    the node count), min-max scale by the maximum raw value, write
+    data/processed/ebc.parquet (columns u, v, key, ebc_raw, ebc_norm), save a
+    histogram to outputs/figures/ebc_distribution.png, and log summary statistics.
+    args.mode overrides config.EBC_MODE.
+    """
     config.ensure_dirs()
     mode = args.mode or config.EBC_MODE
     log.info("EBC mode=%s k=%s seed=%s", mode, config.EBC_K, config.EBC_SEED)
 
+    # Load the strongly connected study graph produced by Phase 1.
     g_path = config.PROCESSED_DIR / "G_scc.gpickle"
     if not g_path.exists():
         raise FileNotFoundError(f"{g_path} not found; run 01_graph_construction.py first.")
@@ -41,6 +51,7 @@ def main(args: argparse.Namespace) -> None:
             G: nx.MultiDiGraph = pickle.load(f)
         log.info("Loaded graph: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
 
+    # Compute EBC: k=None gives the exact algorithm, otherwise k sampled pivots.
     k = None if mode == "exact" else min(config.EBC_K, G.number_of_nodes())
     with timed(log, f"compute edge betweenness centrality (mode={mode}, k={k})"):
         # weight=None per manuscript: EBC reflects unweighted topological structure,
@@ -49,6 +60,7 @@ def main(args: argparse.Namespace) -> None:
             G, k=k, normalized=False, weight=None, seed=config.EBC_SEED
         )
 
+    # Divide by the maximum raw value so ebc_norm lies in [0, 1], and save per edge.
     max_ebc = max(raw_ebc.values()) if raw_ebc else 0.0
     with timed(log, "write ebc.parquet"):
         rows = [
@@ -61,6 +73,7 @@ def main(args: argparse.Namespace) -> None:
         df.to_parquet(out_path)
         log.info("Wrote %s (%d edges); max_raw_ebc=%.6g", out_path, len(df), max_ebc)
 
+    # Plot a histogram of the normalized values for the thesis figures.
     with timed(log, "write EBC distribution figure"):
         import matplotlib
         matplotlib.use("Agg")
