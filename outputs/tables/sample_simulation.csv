@@ -1,18 +1,34 @@
 step,value
+Test set,"pairs_test_W3.parquet (50,000 pairs)"
 Test row,28680
-Source node u (OSM id / embedding index),24740 / 8223
-Target node v (OSM id / embedding index),24368 / 26688
+Source node u (graph node ID / embedding index),24740 / 8223
+Target node v (graph node ID / embedding index),24368 / 26688
 "u lon, lat","121.07398, 14.63617"
 "v lon, lat","121.08631, 14.69520"
-"Great-circle (Euclidean baseline) distance, m","6,696.1"
-"Shortest path: edges / length, km",160 / 9.57
-"Exact W3 cost d*(u,v) (label)","1,420.62"
+Graph,G_scc.gpickle (largest strongly connected component)
+Intersections (nodes),"31,778"
+One-way links (directed edges),"73,071"
+u found in graph,True
+v found in graph,True
+"Straight-line (Euclidean baseline) distance, m","6,696.1"
+"Cheapest W3 route: edges / length, km",160 / 9.57
+"Share of route on primary/secondary roads, %",83
+"Travel time along route (sum of W1), s","1,293.4 (about 21.6 min)"
+"Exact W3 cost d*(u,v) stored as label","1,420.62"
 Recomputed Dijkstra W3 cost (check),"1,420.62"
-"Exact W3 cost d*(v,u)","1,350.19"
+Label matches recomputation,True
+"Exact W3 cost d*(v,u) (return trip)","1,350.19"
+Embedding matrix Z_W3.npy shape,"31,778 nodes x 128 dims"
 z_u first 5 of 128 dims,[ 0.603  0.233 -0.268 -0.234  0.567]
 z_v first 5 of 128 dims,[ 0.235  0.485  0.246  0.239 -0.356]
-"Oracle C-W3-seed0 prediction d^(u,v)","1,432.92"
-"Oracle C-W3-seed0 prediction d^(v,u)","1,327.94"
+Model file,C-W3-seed0.pt
+Architecture,siamese_ordered
+Trainable parameters,"79,233"
+"Oracle prediction d^(u,v)","1,432.92"
+"Oracle prediction d^(v,u) (return trip)","1,327.94"
+"Exact cost d*(u,v)","1,420.62"
+"Oracle prediction d^(u,v)","1,432.92"
 "Absolute error |d^(u,v) - d*(u,v)|",12.30
 "Relative error, %",0.87
 Multiplicative distortion,1.0087
+Oracle knows return trip is cheaper,True
