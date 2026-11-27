@@ -7,8 +7,17 @@
 #   make setup            # install dependencies
 #   make data             # download datasets + resolve barangay boundaries
 #   make graph ebc weights embeddings labels
-#   make ablation         # train all 18 runs, then evaluate
+#   make ablation         # train all 27 runs, then evaluate
 #   make maps             # Structural Distance Maps
+#
+# Not covered by any target (run by hand after `make maps`, from the repo root):
+#   python src/04_embeddings.py --sweep        # p/q embeddings. WARNING: also re-embeds W1/W2/W3,
+#                                              # overwriting Z_W*.npy that trained models depend on
+#   python src/04b_pq_sensitivity.py           # p/q sensitivity study (needs the --sweep files)
+#   python src/10_asymmetry.py                 # one-way asymmetry check
+#   python src/11_chapter4_figures.py          # Chapter IV figures 4.3, 4.6, 4.7
+#   python src/12_sample_simulation.py         # one query traced step by step
+#   python src/13_excess_isolation.py          # excess isolation (location effect removed)
 
 PYTHON ?= python
 SRC := src
@@ -25,11 +34,11 @@ help:
 	@echo "  weights     Phase 3 : friction weights W1/W2/W3"
 	@echo "  embeddings  Phase 4 : Node2Vec+ embeddings per condition"
 	@echo "  labels      Phase 5 : stratified sampling + Dijkstra labels"
-	@echo "  train       Phase 7 : train all 18 ablation runs"
+	@echo "  train       Phase 7 : train all 27 ablation runs"
 	@echo "  evaluate    Phase 8 : metrics + ablation_results.csv"
 	@echo "  ablation    train + evaluate (the full ablation study)"
 	@echo "  maps        Phase 9 : Structural Distance Maps"
-	@echo "  all         Run the entire pipeline end to end"
+	@echo "  all         Run the main pipeline: data to maps (see the header for steps run by hand)"
 
 setup:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -53,7 +62,8 @@ embeddings:
 labels:
 	$(PYTHON) $(SRC)/05_sampling_labels.py
 
-# Phase 7: trains the full 3 x 2 x 3 grid (18 runs). Narrow it down with flags, e.g.
+# Phase 7: trains the full 3 x 3 x 3 grid (3 weights x 3 architectures x 3 seeds = 27 runs).
+# Narrow it down with flags, e.g.
 #   $(PYTHON) src/07_train.py --condition W3
 #   $(PYTHON) src/07_train.py --arch siamese --seed 0
 train:
@@ -70,6 +80,9 @@ maps:
 
 all: data graph ebc weights embeddings labels ablation maps
 
+# WARNING: this deletes outputs/models/*, which the repo now tracks in git (the committed
+# trained checkpoints), and outputs/embeddings/*, which are NOT tracked and cannot be
+# regenerated bit-for-bit. Only run it if you intend to retrain everything.
 clean-outputs:
 	rm -rf outputs/models/* outputs/embeddings/* outputs/figures/* \
 	       outputs/tables/* outputs/maps/*
