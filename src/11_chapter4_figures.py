@@ -85,12 +85,20 @@ def _finish_map(ax) -> None:
 # Figure 4.3 -- top 1% EBC corridors
 # ---------------------------------------------------------------------------
 def figure_top_ebc() -> None:
+    """Draw Figure 4.3: the top 1% of road edges by normalized EBC over all roads.
+
+    Reads edges_scc.parquet and ebc.parquet, keeps the TOP_EBC_SHARE highest
+    ebc_norm edges, and writes outputs/figures/Figure_4.3_top_ebc_corridors.png.
+    Raises RuntimeError if any edge has no EBC value.
+    """
+    # Step 1: attach each edge's normalized EBC (joined on the u, v, key edge key)
     edges = gpd.read_parquet(config.PROCESSED_DIR / "edges_scc.parquet").to_crs(config.CRS_UTM_51N)
     ebc = pd.read_parquet(config.PROCESSED_DIR / "ebc.parquet").set_index(["u", "v", "key"])
     edges = edges.join(ebc[["ebc_norm"]], how="left")
     if edges["ebc_norm"].isna().any():
         raise RuntimeError("Some edges in edges_scc.parquet have no EBC value; rerun 02_ebc.py.")
 
+    # Step 2: pick the top share of edges; the lowest kept value is the colour-scale floor
     n_top = int(round(len(edges) * TOP_EBC_SHARE))
     top = edges.nlargest(n_top, "ebc_norm").sort_values("ebc_norm")
     threshold = top["ebc_norm"].min()
@@ -99,13 +107,17 @@ def figure_top_ebc() -> None:
     log.info("Top %.0f%%: %d edges, EBC_norm >= %.4f, %.1f km of %.1f km",
              TOP_EBC_SHARE * 100, n_top, threshold, top_km, all_km)
 
+    # Step 3: colour scale runs from the cutoff value to the maximum, light to dark blue
     cmap = LinearSegmentedColormap.from_list("ebc", ["#7fb3d8", BLUE_DARK])
     norm = Normalize(vmin=threshold, vmax=top["ebc_norm"].max())
 
+    # Step 4: all roads as a thin grey base layer (linewidth 0.3), top edges drawn thicker
+    # (linewidth 1.6) on top; zorder keeps the corridors above the base
     fig, ax = plt.subplots(figsize=(7.5, 8.5))
     edges.plot(ax=ax, color=GREY_ROAD, linewidth=0.3, zorder=1)
     top.plot(ax=ax, column="ebc_norm", cmap=cmap, norm=norm, linewidth=1.6, zorder=2)
     _finish_map(ax)
+    # Step 5: colorbar (shrink = height fraction, pad = gap to the map), then save
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.02)
     cbar.set_label("Normalized EBC (top 1% of edges)")
@@ -127,6 +139,16 @@ def _great_circle_m(lon1, lat1, lon2, lat2) -> np.ndarray:
 
 
 def figure_euclidean_divergence() -> None:
+    """Draw Figure 4.6: test pairs where straight-line distance and W3 cost disagree most.
+
+    Computes ratio = great-circle distance / W3 cost for every pair in
+    pairs_test_W3.parquet (pairs with cost 0 are dropped), takes the top and
+    bottom DIVERGENCE_SHARE of the ratio, and draws PAIRS_PER_PANEL random
+    pairs from each as lines on the barangay map. Writes
+    outputs/figures/Figure_4.6_euclidean_divergence.png and
+    outputs/tables/euclidean_divergence_summary.csv.
+    """
+    # Step 1: straight-line distance and distance-to-cost ratio for every test pair
     nodes = _load_nodes()
     pairs = pd.read_parquet(config.PROCESSED_DIR / "pairs_test_W3.parquet")
     u, v = pairs["u_idx"].to_numpy(), pairs["v_idx"].to_numpy()
@@ -135,11 +157,13 @@ def figure_euclidean_divergence() -> None:
     pairs = pairs[pairs["dist"] > 0].copy()
     pairs["ratio"] = pairs["euclid_m"] / pairs["dist"]
 
+    # Step 2: ratio cutoffs and the two extreme groups (high ratio = far but cheap)
     hi_cut = pairs["ratio"].quantile(1 - DIVERGENCE_SHARE)
     lo_cut = pairs["ratio"].quantile(DIVERGENCE_SHARE)
     top = pairs[pairs["ratio"] >= hi_cut]
     bottom = pairs[pairs["ratio"] <= lo_cut]
 
+    # Step 3: summary table for all pairs and for each extreme group
     summary = pd.DataFrame([
         {"group": name, "n_pairs": len(df), "ratio_cutoff": cut,
          "median_euclid_km": df["euclid_m"].median() / 1000, "median_cost": df["dist"].median()}
@@ -150,6 +174,7 @@ def figure_euclidean_divergence() -> None:
     log.info("Median ratio %.2f; top cut %.2f; bottom cut %.2f; wrote %s",
              pairs["ratio"].median(), hi_cut, lo_cut, summary_path)
 
+    # Step 4: two panels, each a fixed-seed random subsample of its group so lines stay legible
     brgy, _ = _load_barangays()
     rng = np.random.default_rng(PLOT_SEED)
     fig, axes = plt.subplots(1, 2, figsize=(11, 8))
@@ -163,11 +188,14 @@ def figure_euclidean_divergence() -> None:
         su, sv = sample["u_idx"].to_numpy(), sample["v_idx"].to_numpy()
         xs = np.stack([nodes["x"].to_numpy()[su], nodes["x"].to_numpy()[sv]])
         ys = np.stack([nodes["y"].to_numpy()[su], nodes["y"].to_numpy()[sv]])
+        # xs/ys have shape (2, n): row 0 = source coordinates, row 1 = target, so each
+        # column is one line segment; alpha 0.6 lets overlapping lines show density
         ax.plot(xs, ys, color=BLUE_LINE, linewidth=0.8, alpha=0.6, zorder=2)
         ax.scatter(np.concatenate([xs[0], xs[1]]), np.concatenate([ys[0], ys[1]]),
                    s=6, color=BLUE_LINE, zorder=3)
         ax.set_title(title, fontsize=12)
         _finish_map(ax)
+    # Step 5: caption placed in figure coordinates (centred, near the bottom), then save
     fig.text(0.5, 0.04, f"Each line joins one sampled test pair ({PAIRS_PER_PANEL} per panel); W3 condition.",
              ha="center", fontsize=10, color="#555555")
 
@@ -181,22 +209,34 @@ def figure_euclidean_divergence() -> None:
 # Figure 4.7 -- isolation choropleth
 # ---------------------------------------------------------------------------
 def figure_isolation() -> None:
+    """Draw Figure 4.7: choropleth of mean isolation score by barangay.
+
+    Joins outputs/tables/barangay_isolation.csv to the barangay polygons by
+    name and shades by mean_isolation_score. Barangays with no score are drawn
+    grey and hatched and listed in a footnote. Writes
+    outputs/figures/Figure_4.7_isolation_choropleth.png.
+    """
+    # Step 1: load the scores written by 09_isolation_choropleth.py
     scores_path = config.TABLES_DIR / "barangay_isolation.csv"
     if not scores_path.exists():
         raise FileNotFoundError(f"{scores_path} not found; run 09_isolation_choropleth.py first.")
     scores = pd.read_csv(scores_path)
     brgy, name_col = _load_barangays()
+    # Step 2: left join so barangays without a score stay on the map and are reported
     merged = brgy.merge(scores, left_on=name_col, right_on="barangay_name", how="left")
     missing = merged.loc[merged["mean_isolation_score"].isna(), name_col].tolist()
     log.info("Isolation scores for %d/%d barangays; no score: %s",
              merged["mean_isolation_score"].notna().sum(), len(merged), missing)
 
+    # Step 3: choropleth; legend shrink/pad size and place the colorbar, missing_kwds styles
+    # the barangays without a score
     fig, ax = plt.subplots(figsize=(7.5, 8.5))
     merged.plot(ax=ax, column="mean_isolation_score", cmap="Blues", edgecolor="white", linewidth=0.4,
                 legend=True, legend_kwds={"shrink": 0.6, "pad": 0.02,
                                           "label": "Mean predicted friction-weighted distance (W3 cost units)"},
                 missing_kwds={"color": "#d9d9d9", "hatch": "///", "edgecolor": "white"})
     _finish_map(ax)
+    # Step 4: footnote naming the unscored barangays (if any), then save
     if missing:
         fig.text(0.02, 0.02, f"Grey hatched: no road nodes ({', '.join(missing)})", fontsize=8, color="#555555")
 
@@ -210,6 +250,14 @@ FIGURES = {"4.3": figure_top_ebc, "4.6": figure_euclidean_divergence, "4.7": fig
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 11: draw the requested Chapter IV figures, each under a timer.
+
+    Draws every key in FIGURES (4.3, 4.6, 4.7), or only those given with
+    --only. Reads the data/processed files and outputs/tables/barangay_isolation.csv
+    listed in the module docstring; writes the three PNGs in outputs/figures/
+    and outputs/tables/euclidean_divergence_summary.csv. The functions run in
+    the order given, and an error in one stops the run.
+    """
     config.ensure_dirs()
     for key in args.only or FIGURES:
         with timed(log, f"Figure {key}"):

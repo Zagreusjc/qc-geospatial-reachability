@@ -1,4 +1,4 @@
-"""Phase 9b -- Excess (network-caused) isolation per barangay.
+"""Phase 13 -- Excess (network-caused) isolation per barangay (follow-up to Phase 9).
 
 The isolation score of 09_isolation_choropleth.py is the mean oracle travel
 cost from a node to every other node. Part of that score is just location:
@@ -66,6 +66,17 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 def _excess_scores(checkpoint) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (node_df, curve_df): per-node actual/expected cost and the citywide cost curve.
+
+    Takes a loaded oracle checkpoint. Predicts the cost of every ordered node
+    pair in batches, bins each pair by straight-line distance (BIN_KM wide,
+    N_BINS bins), and builds the curve "mean predicted cost per distance bin".
+    node_df has one row per node with actual_cost (mean predicted cost to all
+    other nodes), expected_cost (the same trips priced at the curve) and
+    excess = actual_cost / expected_cost - 1. curve_df has one row per
+    non-empty bin (bin_start_km, n_pairs, mean_oracle_cost).
+    """
+    # Step 1: embeddings, node coordinates (radians, same row order as Z) and the oracle
     device = config.DEVICE
     weight, arch = checkpoint["weight_condition"], checkpoint["arch"]
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
@@ -83,12 +94,14 @@ def _excess_scores(checkpoint) -> tuple[pd.DataFrame, pd.DataFrame]:
     model.eval()
     sigma, mu = checkpoint["sigma"], checkpoint["mu"]
 
+    # Step 2: accumulators filled by the exhaustive pass below
     # per-node sum of predicted cost, and per-node count of targets in each distance bin
     cost_sum = torch.zeros(n, dtype=torch.float64, device=device)
     node_bins = torch.zeros(n, N_BINS, dtype=torch.float64, device=device)
     # citywide sum of predicted cost per distance bin (for the expected-cost curve)
     bin_cost = torch.zeros(N_BINS, dtype=torch.float64, device=device)
 
+    # Step 3: loop over source blocks x target blocks; each block predicts all its pairs at once
     sb, tb = config.ISOLATION_SOURCE_BATCH, config.ISOLATION_TARGET_BATCH
     log.info("Exhaustive excess isolation: %d x %d pairs (device=%s)", n, n, device)
     with torch.no_grad():
@@ -103,9 +116,11 @@ def _excess_scores(checkpoint) -> tuple[pd.DataFrame, pd.DataFrame]:
                 s_rep, t_rep = src.repeat_interleave(nt), tgt.repeat(ns)
                 pred = model(Z_t[s_rep], Z_t[t_rep]).double() * sigma + mu
                 d_km = _haversine_km(lat[s_rep], lon[s_rep], lat[t_rep], lon[t_rep])
+                # distance bin of every pair in the block (distances past the last bin go in the last bin)
                 b = (d_km / BIN_KM).long().clamp_(0, N_BINS - 1)
                 cost_sum[s0:s1] += pred.view(ns, nt).sum(dim=1)
                 bin_cost.index_add_(0, b, pred)
+                # count targets per (source, bin) by flattening the pair of indices into one
                 flat = (s_rep - s0) * N_BINS + b
                 node_bins[s0:s1] += torch.bincount(flat, minlength=ns * N_BINS).view(ns, N_BINS).double()
             log.info("  sources %d/%d done", s1, n)
@@ -116,10 +131,13 @@ def _excess_scores(checkpoint) -> tuple[pd.DataFrame, pd.DataFrame]:
         bin_cost[0] -= self_pred.sum()
         node_bins[:, 0] -= 1
 
+    # Step 4: expected-cost curve = citywide mean predicted cost per bin (0 for empty bins);
+    # a node's expected cost prices each of its trips at the curve value for its distance bin
     bin_count = node_bins.sum(dim=0)
     curve = torch.where(bin_count > 0, bin_cost / bin_count.clamp(min=1), torch.zeros_like(bin_cost))
     expected_sum = node_bins @ curve
 
+    # Step 5: average over the n - 1 other nodes and assemble the output tables
     actual = (cost_sum / (n - 1)).cpu().numpy()
     expected = (expected_sum / (n - 1)).cpu().numpy()
     node_df = pd.DataFrame({
@@ -138,17 +156,37 @@ def _excess_scores(checkpoint) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 13: compute excess isolation per node and per barangay, and draw the figure.
+
+    Steps in order: (1) choose and load the oracle checkpoint for --run-id
+    (via 09's _pick_best_run); (2) compute node actual/expected costs and the
+    distance curve with _excess_scores; (3) assign nodes to barangays by a
+    spatial join and aggregate to barangay level, with ranks; (4) log the
+    Spearman correlation between total and excess isolation and the top 10 and
+    bottom 5 barangays by excess; (5) draw the side-by-side map.
+
+    Reads the inputs listed in the module docstring (the oracle checkpoint,
+    outputs/embeddings/Z_*.npy, node_index.parquet, nodes_scc.parquet,
+    qc_barangays.gpkg). Writes outputs/tables/node_excess_isolation.csv,
+    outputs/tables/excess_isolation_curve.csv,
+    outputs/tables/barangay_excess_isolation.csv and
+    outputs/figures/Figure_excess_isolation.png.
+    """
+    # Step 1: load the chosen oracle checkpoint
     config.ensure_dirs()
     run_path = iso_mod._pick_best_run(args.run_id)
     checkpoint = torch.load(run_path, map_location=config.DEVICE, weights_only=False)
     log.info("Using run %s (%s / %s / seed %s)", run_path.stem,
              checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"])
 
+    # Step 2: exhaustive pass over all pairs; save node-level and curve tables
     with timed(log, "compute per-node actual and expected costs"):
         node_df, curve_df = _excess_scores(checkpoint)
     node_df.to_csv(config.TABLES_DIR / "node_excess_isolation.csv", index=False)
     curve_df.to_csv(config.TABLES_DIR / "excess_isolation_curve.csv", index=False)
 
+    # Step 3: assign each node to the barangay polygon that contains it, then aggregate;
+    # barangay excess is the ratio of mean actual to mean expected cost, not a mean of node ratios
     barangays = gpd.read_file(config.PROCESSED_DIR / "qc_barangays.gpkg", layer="barangays")
     name_col = next(c for c in barangays.columns if c.lower() in ("adm4_en", "adm4_name", "name_4"))
     pts = gpd.GeoDataFrame(node_df, geometry=gpd.points_from_xy(node_df["lon"], node_df["lat"]),
@@ -167,12 +205,14 @@ def main(args: argparse.Namespace) -> None:
     brgy.to_csv(out, index=False)
     log.info("Wrote %s (%d barangays)", out, len(brgy))
 
+    # Step 4: how much does the excess ranking differ from the total-isolation ranking
     rho_loc = brgy["mean_isolation_score"].corr(brgy["excess_pct"], method="spearman")
     log.info("Spearman(total isolation, excess isolation) across barangays = %.3f", rho_loc)
     log.info("Top 10 by excess:\n%s", brgy.head(10)[["barangay_name", "excess_pct", "isolation_rank"]].to_string(index=False))
     log.info("Bottom 5 by excess:\n%s", brgy.tail(5)[["barangay_name", "excess_pct", "isolation_rank"]].to_string(index=False))
 
-    # side-by-side figure: total isolation (current figure) vs excess isolation
+    # Step 5: side-by-side figure: total isolation (current figure) vs excess isolation
+    # (the diverging colour scale is centred on 0 and symmetric, +/- lim, so red = above typical)
     m = barangays.to_crs(config.CRS_UTM_51N).merge(brgy, left_on=name_col, right_on="barangay_name", how="left")
     fig, ax = plt.subplots(1, 2, figsize=(13, 8.5))
     m.plot("mean_isolation_score", ax=ax[0], cmap="YlOrRd", edgecolor="white", linewidth=0.4, legend=True,
@@ -185,6 +225,7 @@ def main(args: argparse.Namespace) -> None:
                         "shrink": 0.6})
     ax[0].set_title("(a) Total isolation", fontsize=12)
     ax[1].set_title("(b) Excess isolation (location effect removed)", fontsize=12)
+    # annotate the 6 highest and 3 lowest excess barangays on panel (b)
     label = list(brgy.head(6)["barangay_name"]) + list(brgy.tail(3)["barangay_name"])
     for name in label:
         p = m.loc[m["barangay_name"] == name].geometry.representative_point().iloc[0]

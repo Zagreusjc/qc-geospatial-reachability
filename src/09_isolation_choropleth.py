@@ -3,7 +3,9 @@
 Turns the best oracle's distance estimates into the barangay-level output.
 
 Steps   : per-node isolation score from the best oracle (default: highest
-          test-set Spearman rho in ablation_results.csv, expected A-W3-*) ->
+          test-set Spearman rho in ablation_results.csv, which is a W2 run, so
+          scores are in W2 units; pass --run-id C-W3-seed0 for W3 cost units,
+          as in the thesis maps) ->
           spatial join nodes to barangay polygons -> mean structural isolation
           score per barangay -> Folium choropleth of the 142 barangays, with
           the high-divergence pairs on a second layer.
@@ -44,6 +46,12 @@ log = get_logger("09_isolation_choropleth")
 
 
 def _pick_best_run(run_id: str | None):
+    """Return the path of the checkpoint to map.
+
+    If `run_id` is given, return config.MODELS_DIR / "<run_id>.pt" (error if it
+    is missing). Otherwise read outputs/tables/ablation_results.csv and return
+    the checkpoint of the "run" row with the highest Spearman rho.
+    """
     if run_id:
         path = config.MODELS_DIR / f"{run_id}.pt"
         if not path.exists():
@@ -63,12 +71,22 @@ def _pick_best_run(run_id: str | None):
 
 
 def _node_isolation_scores(checkpoint) -> pd.DataFrame:
+    """Compute each node's mean predicted distance to all other nodes.
+
+    Takes a loaded checkpoint and returns a DataFrame with columns node_id and
+    isolation_score (in the checkpoint's own distance units). Every
+    (source, target) pair is scored by the oracle in nested batches of
+    config.ISOLATION_SOURCE_BATCH x config.ISOLATION_TARGET_BATCH so the full
+    pairwise matrix is never held at once.
+    """
     device = config.DEVICE
     weight, arch = checkpoint["weight_condition"], checkpoint["arch"]
+    # Load the embeddings matching the checkpoint's weight condition.
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
     n_nodes = Z.shape[0]
     Z_t = torch.from_numpy(Z).to(device)
 
+    # Rebuild the trained oracle and read the batch sizes and standardisation constants.
     model = models_mod.build_model(arch).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
@@ -79,6 +97,7 @@ def _node_isolation_scores(checkpoint) -> pd.DataFrame:
     log.info("Exhaustive per-node isolation: %d x %d pairs (source batch=%d, target batch=%d, device=%s)",
               n_nodes, n_nodes, src_batch, tgt_batch, device)
 
+    # Accumulate, per source node, the sum of predicted distances over all targets.
     sums = torch.zeros(n_nodes, dtype=torch.float64, device=device)
     with torch.no_grad():
         # Sum of predicted distance to every other node, including self-pairs
@@ -89,6 +108,7 @@ def _node_isolation_scores(checkpoint) -> pd.DataFrame:
             n_src = s_end - s_start
             src_idx = torch.arange(s_start, s_end, device=device)
 
+            # Inner loop: score this block of sources against each block of targets.
             for t_start in range(0, n_nodes, tgt_batch):
                 t_end = min(t_start + tgt_batch, n_nodes)
                 n_tgt = t_end - t_start
@@ -102,26 +122,43 @@ def _node_isolation_scores(checkpoint) -> pd.DataFrame:
 
             log.info("  isolation: sources %d/%d done", s_end, n_nodes)
 
+        # Remove the self-pair term from each node's sum.
         self_pred = model(Z_t, Z_t).double() * sigma + mu  # d(u, u) for every node
         sums -= self_pred
 
+    # Mean over the n_nodes - 1 other nodes, labelled with the original graph node ids.
     scores = (sums / (n_nodes - 1)).cpu().numpy()
     node_index_df = pd.read_parquet(config.PROCESSED_DIR / "node_index.parquet")
     return pd.DataFrame({"node_id": node_index_df["node_id"].to_numpy(), "isolation_score": scores})
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 9: build the barangay isolation table and the Folium map.
+
+    Steps, in order: pick the oracle run (args.run_id, else best Spearman in
+    outputs/tables/ablation_results.csv) and load its checkpoint; compute
+    per-node isolation scores; spatially join nodes (data/processed/nodes_scc.parquet)
+    to the barangay polygons (data/processed/qc_barangays.gpkg, layer
+    "barangays") and average per barangay; write outputs/tables/barangay_isolation.csv;
+    draw the choropleth, with up to 200 high-divergence pairs from
+    data/processed/high_divergence_pairs.parquet (if present) as an extra layer,
+    and save outputs/maps/structural_distance_map.html. Node ids come from
+    data/processed/node_index.parquet.
+    """
     config.ensure_dirs()
     log.info("Building Structural Distance Maps for %d barangays", config.N_BARANGAYS)
 
+    # Step 1: choose the oracle run and load its checkpoint.
     run_path = _pick_best_run(args.run_id)
     checkpoint = torch.load(run_path, map_location=config.DEVICE, weights_only=False)
     log.info("Using run %s (%s / %s / seed %s)",
              run_path.stem, checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"])
 
+    # Step 2: per-node isolation scores from the oracle.
     with timed(log, "compute per-node isolation scores"):
         node_scores = _node_isolation_scores(checkpoint)
 
+    # Step 3: attach node scores to node points, join to barangay polygons, average per barangay.
     with timed(log, "spatial join nodes -> barangays"):
         # nodes_scc.parquet is indexed by "osmid" (our graph node id) and already
         # carries both UTM (x, y) and WGS84 (lon, lat) columns from Phase 1's
@@ -149,10 +186,12 @@ def main(args: argparse.Namespace) -> None:
         )
         log.info("Aggregated isolation scores for %d/%d barangays", len(barangay_scores), config.N_BARANGAYS)
 
+    # Step 4: save the per-barangay table.
     out_csv = config.TABLES_DIR / "barangay_isolation.csv"
     barangay_scores.to_csv(out_csv, index=False)
     log.info("Wrote %s", out_csv)
 
+    # Step 5: build the map -- choropleth, hover tooltips, then the optional pair layer.
     with timed(log, "build Folium choropleth"):
         barangays_scored = barangays.merge(
             barangay_scores, left_on=name_col, right_on="barangay_name", how="left"
@@ -183,6 +222,7 @@ def main(args: argparse.Namespace) -> None:
             style_function=lambda _: {"fillOpacity": 0, "weight": 0.5, "color": "#555555"},
         ).add_to(fmap)
 
+        # Draw the first 200 rows of the high-divergence file as lines between node pairs.
         hd_path = config.PROCESSED_DIR / "high_divergence_pairs.parquet"
         if hd_path.exists():
             hd_df = pd.read_parquet(hd_path)
@@ -201,6 +241,7 @@ def main(args: argparse.Namespace) -> None:
                 ).add_to(layer)
             layer.add_to(fmap)
 
+        # Layer toggle, then save the HTML map.
         folium.LayerControl().add_to(fmap)
 
         map_path = config.MAPS_DIR / "structural_distance_map.html"

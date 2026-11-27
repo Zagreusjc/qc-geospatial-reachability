@@ -68,6 +68,15 @@ def _sample_pairs(nodes: list, rng: random.Random) -> list:
 
 
 def _true_distances_both_directions(G, pairs: list, condition: str) -> pd.DataFrame:
+    """Return true distances in both directions for each sampled pair.
+
+    Takes the graph (edge attribute "w" already set for `condition`), a list
+    of (s, t) pairs and the condition name (used for logging). For each distinct
+    source it runs Dijkstra on the graph (d*(s, t)) and on the reversed graph
+    (d*(t, s)). The returned DataFrame has s, t, d_fwd, d_rev, true_asym,
+    rel_asym and is_asym; pairs where either distance is not positive are
+    dropped. is_asym means rel_asym exceeds ASYM_REL_THRESHOLD.
+    """
     G_rev = G.reverse(copy=False)
     by_source = {}
     for s, t in pairs:
@@ -110,6 +119,15 @@ def _predict_both(checkpoint, Z_t, u_idx, v_idx):
 
 
 def _run_metrics(df: pd.DataFrame, pred_fwd: np.ndarray, pred_rev: np.ndarray) -> dict:
+    """Score one model's directional predictions against the true distances.
+
+    Takes the pair table from _true_distances_both_directions and the model's
+    forward and reverse predictions; returns a dict with forward and reverse
+    MAE and mean absolute predicted asymmetry over all pairs. The asymmetry MAE,
+    sign agreement and Spearman are computed only over pairs flagged is_asym,
+    and are NaN when fewer than 3 such pairs exist (Spearman is also NaN if
+    the predicted asymmetries are constant).
+    """
     pred_asym = pred_fwd - pred_rev
     m = df["is_asym"].to_numpy()
     true_asym = df["true_asym"].to_numpy()
@@ -130,9 +148,21 @@ def _run_metrics(df: pd.DataFrame, pred_fwd: np.ndarray, pred_rev: np.ndarray) -
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 10: measure true directional asymmetry and each oracle's fit to it.
+
+    Steps, in order: load data/processed/G_scc.gpickle, friction_weights.parquet
+    and node_index.parquet; sample node pairs once (seeded by config.SAMPLING_SEED);
+    load every checkpoint in outputs/models/*.pt (plus outputs/models_archived_A/*.pt
+    if present); then for each weight condition compute true distances in both
+    directions, add a condition summary row, load Z_<condition>.npy from
+    config.EMBEDDINGS_DIR and add one row per matching checkpoint. Finally add
+    per-(weight, arch) mean/std rows and write outputs/tables/asymmetry_results.csv.
+    `args` is unused.
+    """
     config.ensure_dirs()
     device = config.DEVICE
 
+    # Step 1: load the graph, per-condition edge weights and node-index mapping.
     with timed(log, "load graph + weights + node index"):
         with open(config.PROCESSED_DIR / "G_scc.gpickle", "rb") as f:
             G = pickle.load(f)
@@ -140,16 +170,19 @@ def main(args: argparse.Namespace) -> None:
         node_index_df = pd.read_parquet(config.PROCESSED_DIR / "node_index.parquet")
         node_to_idx = {int(nid): i for i, nid in enumerate(node_index_df["node_id"])}
 
+    # Step 2: sample one set of pairs, reused for all weight conditions.
     rng = random.Random(config.SAMPLING_SEED)
     pairs = _sample_pairs(list(G.nodes), rng)
     log.info("Sampled %d node pairs (%d sources x %d targets)", len(pairs), N_SOURCES, N_TARGETS_PER_SOURCE)
 
+    # Step 3: load every checkpoint once, up front.
     checkpoints = []
     for p in _checkpoint_paths():
         ck = torch.load(p, map_location=device, weights_only=False)
         checkpoints.append((p.stem, ck))
     log.info("Found %d trained models", len(checkpoints))
 
+    # Step 4: per weight condition, get true two-way distances and summarise how often they differ.
     rows = []
     for condition in config.WEIGHT_CONDITIONS:
         log.info("=== Condition %s ===", condition)
@@ -169,6 +202,7 @@ def main(args: argparse.Namespace) -> None:
                  condition, rows[-1]["n_asymmetric"], len(df), rows[-1]["pct_asymmetric"],
                  100 * ASYM_REL_THRESHOLD)
 
+        # Step 5: score each checkpoint trained under this condition on the same pairs.
         Z = np.load(config.EMBEDDINGS_DIR / f"Z_{condition}.npy").astype(np.float32)
         Z_t = torch.from_numpy(Z).to(device)
         u_idx = torch.tensor([node_to_idx[int(s)] for s in df["s"]], dtype=torch.long, device=device)
@@ -185,6 +219,7 @@ def main(args: argparse.Namespace) -> None:
                      run_id, metrics["asym_spearman"], metrics["asym_sign_agreement"],
                      metrics["mean_abs_pred_asym"])
 
+    # Step 6: average run rows over seeds per (weight, arch) and write the table.
     results = pd.DataFrame(rows)
     run_rows = results[results["row_type"] == "run"]
     agg_cols = ["mae_forward", "mae_reverse", "mean_abs_pred_asym", "asym_mae",

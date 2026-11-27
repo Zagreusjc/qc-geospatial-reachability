@@ -115,19 +115,30 @@ def _great_circle_distances_meters(test_df: pd.DataFrame) -> np.ndarray:
 
 
 def _evaluate_run(run_path) -> dict:
+    """Evaluate one trained checkpoint on the shared test pairs of its weight condition.
+
+    Takes the path of a .pt checkpoint, rebuilds the model, predicts the test
+    pairs from the matching Z_<weight>.npy embeddings, undoes the target
+    standardisation (sigma, mu stored in the checkpoint) and returns one
+    "run" row: metrics plus a bootstrap CI for Spearman rho.
+    """
     device = config.DEVICE
+    # Identify the run from the metadata stored in the checkpoint.
     checkpoint = torch.load(run_path, map_location=device, weights_only=False)
     weight, arch, seed = checkpoint["weight_condition"], checkpoint["arch"], checkpoint["seed"]
     run_id = config.run_id(weight, arch, seed)
 
+    # Load the frozen embeddings and held-out test pairs for this weight condition.
     Z = np.load(config.EMBEDDINGS_DIR / f"Z_{weight}.npy").astype(np.float32)
     Z_t = torch.from_numpy(Z).to(device)
     test_df = _load_test_pairs(weight)
 
+    # Rebuild the architecture and restore the trained weights.
     model = models_mod.build_model(arch).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
 
+    # Predict in standardised units, then map back to the original distance scale.
     u_idx = torch.from_numpy(test_df["u_idx"].to_numpy(dtype=np.int64)).to(device)
     v_idx = torch.from_numpy(test_df["v_idx"].to_numpy(dtype=np.int64)).to(device)
     with torch.no_grad():
@@ -135,6 +146,7 @@ def _evaluate_run(run_path) -> dict:
     pred = (pred_std * checkpoint["sigma"] + checkpoint["mu"]).cpu().numpy()
     y_true = test_df["dist"].to_numpy()
 
+    # Score the predictions and attach a bootstrap CI on Spearman rho.
     metrics = _metrics(y_true, pred)
     ci_lo, ci_hi = _bootstrap_spearman_ci(y_true, pred, seed=config.SAMPLING_SEED)
 
@@ -161,9 +173,18 @@ def _evaluate_euclidean_baseline(weight: str) -> dict:
 
 
 def _cell_aggregates_and_effects(run_rows: list) -> list:
+    """Build the aggregate and effect-size rows that sit below the per-run rows.
+
+    Takes the list of per-run row dicts from _evaluate_run and returns a list of
+    extra row dicts: one mean/std "cell_aggregate" per (weight, arch) cell, one
+    Cohen's d row per arch for H3 (W3 vs W1 Spearman), and one Cohen's d row per
+    weight for H4 (each Siamese variant vs MLP Spearman). Effect sizes are
+    computed over the per-seed Spearman values.
+    """
     df = pd.DataFrame(run_rows)
     extra_rows = []
 
+    # Mean and std across seeds for each (weight, arch) cell.
     for (weight, arch), grp in df.groupby(["weight", "arch"]):
         row = {"row_type": "cell_aggregate", "run_id": f"{arch}-{weight}-mean",
                "weight": weight, "arch": arch, "seed": "mean(0,1,2)", "n_test": grp["n_test"].iloc[0]}
@@ -172,6 +193,7 @@ def _cell_aggregates_and_effects(run_rows: list) -> list:
             row[f"{col}_std"] = grp[col].std()
         extra_rows.append(row)
 
+    # H3: effect of weight condition (W3 vs W1) on Spearman, per architecture.
     for arch, grp in df.groupby("arch"):
         w1 = grp[grp["weight"] == "W1"]["spearman"]
         w3 = grp[grp["weight"] == "W3"]["spearman"]
@@ -183,6 +205,7 @@ def _cell_aggregates_and_effects(run_rows: list) -> list:
                 "note": "positive d => W3 (composite) has higher Spearman than W1 (traversal-only)",
             })
 
+    # H4: effect of architecture (each Siamese variant vs MLP) on Spearman, per weight.
     for weight, grp in df.groupby("weight"):
         mlp = grp[grp["arch"] == "mlp"]["spearman"]
         for siam_arch in ("siamese", "siamese_ordered"):
@@ -217,9 +240,22 @@ def _high_divergence_pairs(percentile: float) -> pd.DataFrame:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 8: evaluate all trained runs and write the ablation table.
+
+    Steps, in order: evaluate every checkpoint found in config.MODELS_DIR
+    (outputs/models/*.pt) on its weight condition's test pairs; evaluate the
+    great-circle Euclidean baseline for each weight condition; add cell
+    aggregates and Cohen's d rows (H3, H4); write them all to
+    outputs/tables/ablation_results.csv; then extract the high-divergence
+    pairs (W3 test set, at/above config.HIGH_DIVERGENCE_PERCENTILE) to
+    data/processed/high_divergence_pairs.parquet. Also reads the test pairs,
+    embeddings, node_index.parquet and nodes_scc.parquet via the helpers.
+    Raises FileNotFoundError if no checkpoints exist. `args` is unused.
+    """
     config.ensure_dirs()
     log.info("Evaluating ablation; primary metric = Spearman rho")
 
+    # Step 1: evaluate every trained checkpoint.
     run_paths = sorted(config.MODELS_DIR.glob("*.pt"))
     if not run_paths:
         raise FileNotFoundError(f"No trained models found in {config.MODELS_DIR}; run 07_train.py first.")
@@ -231,11 +267,13 @@ def main(args: argparse.Namespace) -> None:
             log.info("%s: spearman=%.4f mae=%.4f rmse=%.4f", row["run_id"], row["spearman"], row["mae"], row["rmse"])
             run_rows.append(row)
 
+    # Step 2: Euclidean (great-circle) baseline, one row per weight condition.
     euclidean_rows = []
     for weight in config.WEIGHT_CONDITIONS:
         with timed(log, f"evaluate Euclidean baseline ({weight})"):
             euclidean_rows.append(_evaluate_euclidean_baseline(weight))
 
+    # Step 3: seed aggregates and effect sizes, then write the combined table.
     with timed(log, "cell aggregates + Cohen's d (H3, H4)"):
         extra_rows = _cell_aggregates_and_effects(run_rows)
 
@@ -244,6 +282,7 @@ def main(args: argparse.Namespace) -> None:
     results_df.to_csv(out_path, index=False)
     log.info("Wrote %s (%d rows)", out_path, len(results_df))
 
+    # Step 4: high-divergence pairs, from ground truth vs Euclidean (no oracle involved).
     with timed(log, "high-divergence pairs (W3, ground truth vs Euclidean)"):
         hd_df = _high_divergence_pairs(config.HIGH_DIVERGENCE_PERCENTILE)
         hd_path = config.PROCESSED_DIR / "high_divergence_pairs.parquet"

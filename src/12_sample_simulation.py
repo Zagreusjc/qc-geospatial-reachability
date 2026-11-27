@@ -63,9 +63,25 @@ def _show(pairs_list, width: int = 46) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    """Run Phase 12: trace one W3 test pair through the pipeline and print each step.
+
+    Steps in order: (1) read the pair at --row of pairs_test_W3.parquet and look
+    up its nodes; (2) load G_scc.gpickle and the straight-line distance;
+    (3) read friction_weights.parquet and find the cheapest W3 route with
+    Dijkstra; (4) recompute the label in both directions; (5) read the
+    embeddings of the two nodes from outputs/embeddings/Z_W3.npy; (6) load the
+    checkpoint outputs/models/<--run-id>.pt and predict both directions;
+    (7) compare prediction with the exact cost.
+
+    Also reads data/processed/node_index.parquet and nodes_scc.parquet. Prints
+    the trace and writes outputs/tables/sample_simulation.csv (one row per
+    printed value) and outputs/tables/sample_simulation_route_edges.csv (the
+    edges of the cheapest route).
+    """
     P = config.PROCESSED_DIR
     rows: list[tuple[str, object]] = []  # everything also goes to the CSV
 
+    # record() prints a block of (label, value) rows and keeps them for the CSV written at the end
     def record(step_rows):
         _show(step_rows)
         rows.extend(step_rows)
@@ -88,6 +104,7 @@ def main(args: argparse.Namespace) -> None:
         ("u lon, lat", f"{nodes.loc[u, 'lon']:.5f}, {nodes.loc[u, 'lat']:.5f}"),
         ("v lon, lat", f"{nodes.loc[v, 'lon']:.5f}, {nodes.loc[v, 'lat']:.5f}"),
     ]
+    # barangay columns are optional: use any node column whose name mentions brgy/barangay, if present
     brgy_col = next((c for c in nodes.columns if "brgy" in c.lower() or "barangay" in c.lower()), None)
     if brgy_col:
         step1 += [("u barangay", nodes.loc[u, brgy_col]), ("v barangay", nodes.loc[v, brgy_col])]
@@ -110,18 +127,25 @@ def main(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------ STEP 3
     _step("STEP 3  EBC + FRICTION WEIGHT MODULES: edge weights along the route")
     weights = pd.read_parquet(P / "friction_weights.parquet")
+    # _pick tolerates differing column spellings/case in friction_weights.parquet; each
+    # of W1/EBC/W3 may be missing (None) and is then left out of `keep`
     c_w1 = _pick(weights.columns, "W1")
     c_ebc = _pick(weights.columns, "EBC", "ebc_norm", "ebc", "W2")
     c_w3 = _pick(weights.columns, "W3")
     keep = [c for c in ("u", "v", "key", c_w1, c_ebc, c_w3) if c]
+    # lookup: (u, v, key) -> tuple of the selected weight values (columns after u, v, key)
     wt = {(int(r[0]), int(r[1]), int(r[2])): r[3:] for r in weights[keep].itertuples(index=False)}
     i_w3 = keep.index(c_w3) - 3
 
+    # Dijkstra weight function: G is a multigraph, so (a, b) may have parallel edges
+    # (`data` maps edge key -> attributes); take the cheapest W3 among them
     def w3(a, b, data):
         return min(wt[(a, b, k)][i_w3] for k in data)
 
     cost, path = nx.single_source_dijkstra(G, u, v, weight=w3)
 
+    # walk the route, re-picking the parallel edge Dijkstra effectively used, and collect
+    # its attributes, total length, total W1 and the count of primary/secondary edges
     edge_rows, total_len, total_w1, main_road = [], 0.0, 0.0, 0
     for a, b in zip(path[:-1], path[1:]):
         k = min(G[a][b], key=lambda kk: wt[(a, b, kk)][i_w3])  # edge actually used
@@ -140,6 +164,7 @@ def main(args: argparse.Namespace) -> None:
     edges_df = pd.DataFrame(edge_rows)
     n_edges = len(path) - 1
 
+    # print the first few route edges and the route totals
     print(f"  Weight columns used: {', '.join(keep[3:])}")
     print(f"  First 5 of {n_edges} edges on the cheapest W3 route:")
     print(edges_df.head(5).to_string(index=False))
@@ -173,6 +198,8 @@ def main(args: argparse.Namespace) -> None:
 
     # ------------------------------------------------------------------ STEP 6
     _step(f"STEP 6  ORACLE TRAINING MODULE: query the trained oracle ({args.run_id})")
+    # the checkpoint stores the architecture name and the target standardisation (mu, sigma);
+    # model output is standardised, so it is mapped back to W3 cost units before reporting
     ckpt = torch.load(config.MODELS_DIR / f"{args.run_id}.pt", map_location="cpu", weights_only=False)
     model = models_mod.build_model(ckpt["arch"])
     model.load_state_dict(ckpt["state_dict"])
@@ -201,6 +228,7 @@ def main(args: argparse.Namespace) -> None:
         ("Oracle knows return trip is cheaper", (pred_vu < pred_uv) == (cost_rev < d_true)),
     ])
 
+    # write the CSV outputs
     out = config.TABLES_DIR / "sample_simulation.csv"
     pd.DataFrame(rows, columns=["step", "value"]).to_csv(out, index=False)
     edges_df.to_csv(config.TABLES_DIR / "sample_simulation_route_edges.csv", index=False)
