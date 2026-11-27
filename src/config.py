@@ -179,8 +179,8 @@ WEIGHT_DECAY = 1e-5
 EPOCHS = 100
 EARLY_STOPPING_PATIENCE = 10        # on validation MAE
 BATCH_SIZE = 1024
-LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS
-STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval
+LR_SCHEDULE = "cosine"              # cosine annealing over EPOCHS (documentation only: 07_train.py always uses cosine)
+STANDARDIZE_LABELS = True          # z-score targets during training, invert at eval (documentation only: 07_train.py always standardizes)
 
 # Auto-detects a CUDA GPU; falls back to CPU if torch isn't installed with CUDA
 # support or no GPU is present. Override by setting the env var PIPELINE_DEVICE.
@@ -191,7 +191,7 @@ try:
 except Exception:  # ImportError, or OSError from Windows DLL init when torch loads after numpy
     DEVICE = _os.environ.get("PIPELINE_DEVICE", "cpu")
 
-# Layer widths shared by both architectures (per manuscript tables).
+# Layer widths (per manuscript tables). The Siamese branch is shared by architectures A and C.
 SIAMESE_BRANCH_DIMS = [128, 256, 128, 64]  # input -> ... -> latent
 SIAMESE_HEAD_DIMS = [64, 32, 1]            # |z_u - z_v| -> scalar distance
 MLP_DIMS = [256, 256, 128, 64, 32, 1]      # concat[z_u; z_v] -> scalar distance
@@ -203,7 +203,7 @@ SIAMESE_ORDERED_HEAD_DIMS = [128, 32, 1]   # concat[h_u, h_v] (order-aware) -> s
 HIGH_DIVERGENCE_PERCENTILE = 95    # high-divergence pairs threshold (Euclidean distortion)
 THORUP_ZWICK_K = [2, 3]            # (2k-1) stretch reference points: 3 and 5
 BOOTSTRAP_RESAMPLES = 10000
-COHENS_D_THRESHOLD = 0.5           # substantive effect size for ablation comparisons
+COHENS_D_THRESHOLD = 0.5           # substantive effect size for ablation comparisons (documentation only: no script reads it)
 
 # ---------------------------------------------------------------------------
 # Isolation scoring (Phase 9)
